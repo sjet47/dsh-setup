@@ -164,7 +164,7 @@ export function apply(ctx: Context): void {
   ctx.effect(() =>
     ctx.commands.register({
       name: 'memory',
-      description: "List this project's memories (shared with pi)",
+      description: "Open this project's memory browser (shared with pi)",
       handler: (invocation) => {
         const sessionId = String(invocation.agent.id)
         const record = ensureRecord(sessionId)

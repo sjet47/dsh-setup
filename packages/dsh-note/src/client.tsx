@@ -3,12 +3,14 @@
  * browser. Reads through the authenticated `/api/dsh-note/*` routes; deleting a
  * memory removes the file and its MEMORY.md line in one Host-side step.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { createPortal } from 'react-dom'
 import type { CSSProperties, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-commands/client'
 
 export const inject = ['slots'] as const
 
@@ -51,6 +53,33 @@ function formatAge(mtimeMs: number | undefined): string {
   if (days < 60) return `${days}d`
   const months = Math.round(days / 30)
   return `${months}mo`
+}
+
+/**
+ * Which sessions have the memory browser open. A plain external store keeps
+ * the header button, the `/memory` command action, and the panel itself in
+ * sync without threading React context through the slot framework.
+ */
+const openSessions = new Set<string>()
+const openListeners = new Set<() => void>()
+
+function setMemoryOpen(sessionId: string, open: boolean): void {
+  if (open) openSessions.add(sessionId)
+  else openSessions.delete(sessionId)
+  for (const listener of openListeners) listener()
+}
+
+function subscribeMemoryOpen(listener: () => void): () => void {
+  openListeners.add(listener)
+  return () => openListeners.delete(listener)
+}
+
+function useMemoryOpen(sessionId: string): boolean {
+  return useSyncExternalStore(
+    subscribeMemoryOpen,
+    () => openSessions.has(sessionId),
+    () => false,
+  )
 }
 
 const modalStyle: CSSProperties = {
@@ -172,7 +201,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
     )
   }, [list, query])
 
-  return (
+  return createPortal(
     <div style={modalStyle} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div style={panelStyle} role="dialog" aria-label="Project memory">
         <div
@@ -332,12 +361,13 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
 function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
-  const [open, setOpen] = useState(false)
+  const open = useMemoryOpen(sessionId)
   const [count, setCount] = useState<number | undefined>(undefined)
 
   useEffect(() => {
@@ -363,7 +393,7 @@ function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => setMemoryOpen(sessionId, true)}
         title="Project memory shared with pi"
         style={{
           display: 'inline-flex',
@@ -382,20 +412,25 @@ function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
       >
         Memory{count === undefined ? '' : ` · ${count}`}
       </button>
-      {open ? (
-        <MemoryBrowser
-          sessionId={sessionId}
-          onClose={() => {
-            setOpen(false)
-            setCount(undefined)
-          }}
-        />
-      ) : null}
+      {open ? <MemoryPanel sessionId={sessionId} /> : null}
     </>
   )
 }
 
-/** Register the memory button in the session header's action list. */
+/** The modal itself, mounted from the composer overlay so `/memory` works even
+ *  when the header action area is collapsed. */
+function MemoryPanel({ sessionId }: { sessionId: string }): ReactNode {
+  const open = useMemoryOpen(sessionId)
+  if (!open) return null
+  return <MemoryBrowser sessionId={sessionId} onClose={() => setMemoryOpen(sessionId, false)} />
+}
+
+/** Action target for the client-side `/memory` decoration. */
+function runMemoryCommand(session: { sessionId: string }): void {
+  setMemoryOpen(String(session.sessionId), true)
+}
+
+/** Register the header button, the panel, and the `/memory` client action. */
 export function apply(ctx: Context): void {
   ctx.slots.inject('conversation.session.header.actions', () =>
     ctx.slots.register(
@@ -407,4 +442,27 @@ export function apply(ctx: Context): void {
       MemoryAction,
     ),
   )
+
+  ctx.slots.inject('conversation.input.overlay', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.overlay',
+        id: 'dsh-note-panel',
+        order: 20,
+      },
+      MemoryPanel,
+    ),
+  )
+
+  // Wait for the command surface: a composition without it keeps the button
+  // and the panel, just no `/memory` decoration.
+  ctx.inject(['commandUi'], (scoped) => {
+    scoped.effect(() =>
+      scoped.commandUi.decorate({
+        name: 'memory',
+        available: () => true,
+        ui: { kind: 'action', run: runMemoryCommand },
+      }),
+    )
+  })
 }

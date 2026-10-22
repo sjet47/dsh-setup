@@ -21,19 +21,34 @@ for (const pkg of ['dsh-mr', 'dsh-note', 'dsh-recap']) {
       },
     },
   }
-  new Function('window', readFileSync(process.argv[2] ?? `/tmp/${pkg}.bundle.js`, 'utf8'))(fakeWindow)
+  new Function('window', readFileSync(new URL(`../packages/${pkg}/lib/client.js`, import.meta.url), 'utf8'))(fakeWindow)
   if (!loaded) throw new Error(`${pkg}: loader never called`)
   const regs = []
+  const decorations = []
   const ctx = {
     slots: {
       inject(name, cb) { return cb() },
       register(options, component) { regs.push({ options, component }); return () => {} },
     },
+    commandUi: {
+      decorate(decoration) { decorations.push(decoration); return () => {} },
+    },
+    inject(deps, cb) { cb(ctx); return { dispose: async () => {} } },
+    effect(fn) { fn(); return () => {} },
   }
   loaded.exports.apply(ctx)
-  if (regs.length !== 1) throw new Error(`${pkg}: expected 1 registration, got ${regs.length}`)
-  const { options, component } = regs[0]
-  const html = renderToString(React.createElement(component, { sessionId: 'session-test' }))
-  results.push({ pkg, id: loaded.id, slot: options.name, entryId: options.id, exports: Object.keys(loaded.exports), htmlLength: html.length })
+  if (regs.length === 0) throw new Error(`${pkg}: registered no slot`)
+  let htmlLength = 0
+  for (const { component } of regs) {
+    htmlLength += renderToString(React.createElement(component, { sessionId: 'session-test' })).length
+  }
+  results.push({
+    pkg,
+    id: loaded.id,
+    slots: regs.map((reg) => `${reg.options.name}#${reg.options.id}`).join(', '),
+    commandActions: decorations.map((d) => `${d.name}:${d.ui.kind}`).join(', '),
+    exports: Object.keys(loaded.exports).join(','),
+    htmlLength,
+  })
 }
 console.table(results)
