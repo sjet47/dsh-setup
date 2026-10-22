@@ -37,7 +37,7 @@ There are two ways in, and both open the same panel:
 1. **`/memory`** — a client-side command decoration consumes the bare invocation and opens the browser in place. Nothing is sent to the model, and the composer draft is untouched.
 2. **Memory button** in the session header (shows pi's topic count).
 
-The panel lists the project's memories with search, reads one at a time, and deletes in two steps. Delete removes the file **and** its `MEMORY.md` line in one Host-side step. It renders through a portal on `document.body`, so the composer's own clipping and stacking never cut it off.
+The panel lists the project's memories with search, reads one at a time, and deletes in two steps. Delete removes the file **and** its `MEMORY.md` line in one Host-side step. It renders on an opaque surface (the theme's `bg-layer-2`, not the translucent menu surface) through a portal on `document.body`, so neither the composer's clipping nor the text behind it can bleed through.
 
 Reading and deleting go through authenticated `/api/dsh-note/*` routes; only the owner browser reaches them. A client without the browser bundle (TUI, ACP) still gets the text listing from the Host command handler.
 
