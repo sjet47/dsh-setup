@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": ".client-build",
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-client-ui-renderer/client": [
+        "../../node_modules/@deepseek-ai/dsh-client-ui-renderer/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-conversation/client": [
+        "../../node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-session/client": [
+        "../../node_modules/@deepseek-ai/dsh-client-ui-session/lib/types/client/index.d.ts"
+      ]
+    },
+    "types": [],
+    "noEmitOnError": true
+  },
+  "include": [
+    "src/client.tsx"
+  ]
+}

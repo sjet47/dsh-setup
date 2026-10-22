@@ -1,0 +1,5 @@
+# dsh-recap bundle patch: Host generation, commands and routes; the browser
+# recap line is declared through package.json `dsh.client`.
+- insert:
+    - id: dsh-recap
+      name: dsh-recap

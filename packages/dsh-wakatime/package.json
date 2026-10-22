@@ -1,0 +1,29 @@
+{
+  "name": "dsh-wakatime",
+  "version": "0.1.0",
+  "description": "WakaTime heartbeats for dsh sessions, tool activity and AI line changes",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": "0.2.1-rc.2"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0"
+  }
+}

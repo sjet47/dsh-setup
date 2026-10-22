@@ -1,0 +1,5 @@
+# dsh-mr bundle patch: one Host row that also declares the browser half through
+# package.json `dsh.client`.
+- insert:
+    - id: dsh-mr
+      name: dsh-mr

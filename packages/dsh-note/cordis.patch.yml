@@ -1,0 +1,5 @@
+# dsh-note bundle patch: Host memory injection and routes; the browser panel is
+# declared through package.json `dsh.client`.
+- insert:
+    - id: dsh-note
+      name: dsh-note

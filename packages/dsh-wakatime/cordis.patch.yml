@@ -1,0 +1,4 @@
+# dsh-wakatime bundle patch: one Host row, no browser half.
+- insert:
+    - id: dsh-wakatime
+      name: dsh-wakatime
