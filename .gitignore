@@ -2,3 +2,4 @@ node_modules/
 lib/
 .client-build/
 *.tsbuildinfo
+HANDOFF.md
