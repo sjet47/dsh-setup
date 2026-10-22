@@ -101,7 +101,9 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   width: 'min(820px, 94vw)',
-  maxHeight: 'min(640px, 86vh)',
+  // Fixed height: the frame must not resize when a memory is opened, deleted,
+  // or while the body is loading.
+  height: 'min(600px, 84vh)',
   background: SURFACE,
   color: TEXT,
   border: `0.5px solid ${BORDER}`,
@@ -255,7 +257,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                 outline: 'none',
               }}
             />
-            <div style={{ overflow: 'auto', minHeight: 0 }}>
+            <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
               {topics.map((topic) => (
                 <button
                   key={topic.file}
