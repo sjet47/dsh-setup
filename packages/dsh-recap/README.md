@@ -28,7 +28,7 @@ A recap is stored outside model context, so it never enters the conversation or 
 
 1. **`/recap`** opens a panel: the full recap, the model that produced it, whether it is current or stale, and **Regenerate** / **Dismiss**. The bare invocation is a client-side command decoration, so nothing goes to the model; `/recap status|config|clear|help` still run on the Host and answer as text.
 2. **A line under the composer** shows the first two lines with **Refresh** and **Hide**; clicking the text opens the same panel.
-3. Both the line and the panel use an opaque surface (the theme's `bg-layer-2`), not the translucent menu surface, and the panel portals to `document.body` so the composer's clipping never cuts it off.
+3. Both the line and the panel scale with the theme's conversation font size and use an opaque surface (the theme's `bg-layer-2`), not the translucent menu surface, and the panel portals to `document.body` so the composer's clipping never cuts it off.
 
 The line hides on the next human message and reappears when a new recap is generated.
 

@@ -23,6 +23,9 @@ const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
 const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
 const WARNING = 'var(--dsw-alias-state-warn-primary, #f08c00)'
 const ERROR = 'var(--dsw-alias-state-error-primary, #e03131)'
+const FONT = 'var(--dsh-content-font-size, 14px)'
+/** One step of the content font size, so the panel follows the theme setting. */
+const scale = (factor: number): string => `calc(${FONT} * ${factor})`
 
 interface RecapWire {
   text: string
@@ -88,9 +91,9 @@ const actionStyle: CSSProperties = {
   background: 'transparent',
   color: MUTED,
   cursor: 'pointer',
-  fontSize: 11,
+  fontSize: scale(0.86),
   padding: '1px 7px',
-  lineHeight: '18px',
+  lineHeight: 1.3,
 }
 
 /** One row under the composer: two-line recap, freshness, and actions. */
@@ -140,8 +143,8 @@ function RecapLine({ sessionId }: { sessionId: string }): ReactNode {
         borderRadius: 8,
         background: FILL,
         color: MUTED,
-        fontSize: 11,
-        lineHeight: '16px',
+        fontSize: scale(0.86),
+        lineHeight: 1.45,
       }}
     >
       <span style={{ flex: 'none', fontWeight: 600, letterSpacing: '.02em' }}>Recap</span>
@@ -168,7 +171,7 @@ function RecapLine({ sessionId }: { sessionId: string }): ReactNode {
         {state.text}
       </button>
       {state.stale ? (
-        <span style={{ flex: 'none', color: WARNING, fontSize: 10 }} title="The session moved on since this recap">
+        <span style={{ flex: 'none', color: WARNING, fontSize: scale(0.78) }} title="The session moved on since this recap">
           stale
         </span>
       ) : null}
@@ -263,12 +266,12 @@ function RecapPanel({ sessionId }: { sessionId: string }): ReactNode {
           borderRadius: 12,
           boxShadow: 'var(--dsw-elevation-panel, 0 12px 40px rgba(0,0,0,.28))',
           overflow: 'hidden',
-          fontSize: 13,
+          fontSize: FONT,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderBottom: `0.5px solid ${BORDER}` }}>
-          <strong style={{ fontSize: 13 }}>Recap</strong>
-          <span style={{ flex: 1, color: MUTED, fontSize: 11 }}>
+          <strong style={{ fontSize: scale(1.08) }}>Recap</strong>
+          <span style={{ flex: 1, color: MUTED, fontSize: scale(0.86) }}>
             {model === '' ? '' : model}
             {state !== undefined && text !== '' ? ` · ${state.current ? 'current' : 'stale'}` : ''}
           </span>
@@ -285,7 +288,7 @@ function RecapPanel({ sessionId }: { sessionId: string }): ReactNode {
           )}
         </div>
 
-        {error !== undefined ? <div style={{ padding: '0 14px 8px', color: ERROR, fontSize: 11 }}>{error}</div> : null}
+        {error !== undefined ? <div style={{ padding: '0 14px 8px', color: ERROR, fontSize: scale(0.86) }}>{error}</div> : null}
 
         <div style={{ display: 'flex', gap: 8, padding: '8px 14px 12px', alignItems: 'center' }}>
           <button
@@ -300,7 +303,7 @@ function RecapPanel({ sessionId }: { sessionId: string }): ReactNode {
             Dismiss
           </button>
           <span style={{ flex: 1 }} />
-          <span style={{ color: MUTED, fontSize: 10 }}>auto after 5 min idle</span>
+          <span style={{ color: MUTED, fontSize: scale(0.78) }}>auto after 5 min idle</span>
         </div>
       </div>
     </div>,

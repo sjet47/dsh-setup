@@ -87,6 +87,9 @@ const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
 const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
 const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
 const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
+const FONT = 'var(--dsh-content-font-size, 14px)'
+/** One step of the content font size, so the panel follows the theme setting. */
+const scale = (factor: number): string => `calc(${FONT} * ${factor})`
 
 const modalStyle: CSSProperties = {
   position: 'fixed',
@@ -110,7 +113,7 @@ const panelStyle: CSSProperties = {
   borderRadius: 12,
   boxShadow: 'var(--dsw-elevation-prominent, 0 12px 40px rgba(0,0,0,.28))',
   overflow: 'hidden',
-  fontSize: 13,
+  fontSize: FONT,
 }
 const buttonStyle: CSSProperties = {
   border: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
@@ -118,7 +121,7 @@ const buttonStyle: CSSProperties = {
   background: 'transparent',
   color: MUTED,
   cursor: 'pointer',
-  fontSize: 12,
+  fontSize: scale(0.92),
   padding: '2px 8px',
 }
 
@@ -221,8 +224,8 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
             borderBottom: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
           }}
         >
-          <strong style={{ fontSize: 13 }}>Memory</strong>
-          <span style={{ color: MUTED, fontSize: 12 }}>
+          <strong style={{ fontSize: scale(1.08) }}>Memory</strong>
+          <span style={{ color: MUTED, fontSize: scale(0.92) }}>
             {list?.label ?? ''} · {(list?.topics ?? []).length} topics · shared with pi
           </span>
           <span style={{ flex: 1 }} />
@@ -253,7 +256,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                 border: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
                 background: 'transparent',
                 color: 'inherit',
-                fontSize: 12,
+                fontSize: scale(0.92),
                 outline: 'none',
               }}
             />
@@ -274,21 +277,21 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                     background: selected?.file === topic.file ? FILL : 'transparent',
                     color: 'inherit',
                     cursor: 'pointer',
-                    fontSize: 12,
+                    fontSize: scale(1),
                   }}
                 >
                   <div style={{ display: 'flex', gap: 6 }}>
                     <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {topic.title}
                     </span>
-                    <span style={{ color: MUTED, fontSize: 10, flex: 'none' }}>
+                    <span style={{ color: MUTED, fontSize: scale(0.78), flex: 'none' }}>
                       {topic.exists ? `${formatBytes(topic.size)} · ${formatAge(topic.mtimeMs)}` : 'missing'}
                     </span>
                   </div>
                   <div
                     style={{
                       color: MUTED,
-                      fontSize: 11,
+                      fontSize: scale(0.86),
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
@@ -299,7 +302,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                 </button>
               ))}
               {topics.length === 0 ? (
-                <div style={{ padding: 12, color: MUTED, fontSize: 12 }}>
+                <div style={{ padding: 12, color: MUTED, fontSize: scale(0.92) }}>
                   No memories match.
                 </div>
               ) : null}
@@ -308,7 +311,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
 
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {selected === undefined ? (
-              <div style={{ padding: 16, color: MUTED, fontSize: 12 }}>
+              <div style={{ padding: 16, color: MUTED, fontSize: scale(0.92) }}>
                 Select a memory to read it.
               </div>
             ) : (
@@ -332,7 +335,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                   style={{
                     padding: '0 12px',
                     color: MUTED,
-                    fontSize: 11,
+                    fontSize: scale(0.86),
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
@@ -350,7 +353,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                     borderRadius: 8,
                     background: FILL,
                     fontFamily: 'var(--dsw-font-mono, ui-monospace, monospace)',
-                    fontSize: 12,
+                    fontSize: scale(0.92),
                     lineHeight: 1.5,
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
@@ -364,7 +367,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
         </div>
 
         {error !== undefined ? (
-          <div style={{ padding: '6px 12px', color: 'var(--dsw-alias-state-error-primary, #e03131)', fontSize: 11 }}>
+          <div style={{ padding: '6px 12px', color: 'var(--dsw-alias-state-error-primary, #e03131)', fontSize: scale(0.86) }}>
             {error}
           </div>
         ) : null}
@@ -414,7 +417,7 @@ function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
           background: 'transparent',
           color: MUTED,
           cursor: 'pointer',
-          fontSize: 11,
+          fontSize: 12,
           lineHeight: '18px',
         }}
       >
