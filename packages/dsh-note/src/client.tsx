@@ -352,7 +352,7 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                     padding: 10,
                     borderRadius: 8,
                     background: FILL,
-                    fontFamily: 'var(--dsw-font-mono, ui-monospace, monospace)',
+                    fontFamily: 'inherit',
                     fontSize: scale(0.92),
                     lineHeight: 1.5,
                     whiteSpace: 'pre-wrap',
