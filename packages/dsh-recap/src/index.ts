@@ -78,6 +78,48 @@ interface ModelOverride {
   model: string
 }
 
+/** One selectable model, as the Plugins page renders it. */
+interface ModelOption {
+  id: string
+  name: string
+}
+
+/** One registered provider route and the models its adapter advertises. */
+interface ProviderOption {
+  id: string
+  name: string
+  models: ModelOption[]
+  /** Present when this provider's catalog could not be read. */
+  error?: string
+}
+
+/** How long a provider catalog stays fresh before the page re-queries it. */
+const CATALOG_TTL_MS = 60_000
+/** One provider's catalog read must not hold the configuration page open. */
+const CATALOG_TIMEOUT_MS = 5_000
+
+/**
+ * Bound an adapter call that takes no cancellation signal.
+ * @param promise - the catalog read.
+ * @param ms - budget in milliseconds.
+ * @returns the value, or a rejection naming the timeout.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
+
 interface RecapState {
   text: string
   seq: number
@@ -615,6 +657,120 @@ export function apply(ctx: Context, config: Config = Config()): void {
           }
         }
         return Response.json(wire(state, session), { headers: { 'cache-control': 'no-store' } })
+      },
+    }),
+  )
+
+  /** Cached provider/model catalog for the configuration page. */
+  let catalog: { at: number; value: ProviderOption[] } | undefined
+  let catalogInflight: Promise<ProviderOption[]> | undefined
+
+  /**
+   * Read every registered provider's advertised models. A provider whose
+   * catalog fails still appears, carrying its error, so the page can show the
+   * provider and explain why its model list is empty.
+   * @param force - bypass the freshness window.
+   * @returns the catalog in provider registration order.
+   */
+  async function providerCatalog(force = false): Promise<ProviderOption[]> {
+    if (!force && catalog !== undefined && Date.now() - catalog.at < CATALOG_TTL_MS) return catalog.value
+    if (catalogInflight !== undefined) return catalogInflight
+    const task = (async (): Promise<ProviderOption[]> => {
+      const providers = ctx.llm.listProviders()
+      return await Promise.all(
+        providers.map(async (provider): Promise<ProviderOption> => {
+          try {
+            const models = await withTimeout(ctx.llm.listModels(provider.id), CATALOG_TIMEOUT_MS)
+            return {
+              id: provider.id,
+              name: provider.name,
+              models: models.map((model) => ({ id: model.id, name: model.name })),
+            }
+          } catch (error) {
+            return {
+              id: provider.id,
+              name: provider.name,
+              models: [],
+              error: error instanceof Error ? error.message : String(error),
+            }
+          }
+        }),
+      )
+    })()
+    catalogInflight = task
+    try {
+      const value = await task
+      catalog = { at: Date.now(), value }
+      return value
+    } finally {
+      catalogInflight = undefined
+    }
+  }
+
+  ctx.effect(() =>
+    ctx.connection.fetch.register({
+      path: '/api/dsh-recap/models',
+      methods: ['GET'],
+      requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        const force = new URL(request.url).searchParams.get('refresh') === '1'
+        let providers: ProviderOption[]
+        try {
+          providers = await providerCatalog(force)
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500, headers: { 'cache-control': 'no-store' } },
+          )
+        }
+        const pinned = readOverride()
+        return Response.json(
+          { ...(pinned === undefined ? {} : { current: pinned }), providers },
+          { headers: { 'cache-control': 'no-store' } },
+        )
+      },
+    }),
+  )
+
+  ctx.effect(() =>
+    ctx.connection.fetch.register({
+      path: '/api/dsh-recap/config',
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        let body: { provider?: unknown; model?: unknown; reset?: unknown }
+        try {
+          body = (await request.json()) as typeof body
+        } catch {
+          return Response.json({ error: 'invalid body' }, { status: 400 })
+        }
+        if (body.reset === true) {
+          writeOverride(undefined)
+          catalog = undefined
+          return Response.json({ current: null }, { headers: { 'cache-control': 'no-store' } })
+        }
+        const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+        const model = typeof body.model === 'string' ? body.model.trim() : ''
+        if (provider === '' || model === '') {
+          return Response.json({ error: 'provider and model are required' }, { status: 400 })
+        }
+        const known = ctx.llm.listProviders().map((entry) => entry.id)
+        if (!known.includes(provider)) {
+          return Response.json(
+            { error: `Unknown provider "${provider}". Registered providers: ${known.join(', ') || '(none)'}.` },
+            { status: 400 },
+          )
+        }
+        try {
+          writeOverride({ provider, model })
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          )
+        }
+        catalog = undefined
+        return Response.json({ current: { provider, model } }, { headers: { 'cache-control': 'no-store' } })
       },
     }),
   )

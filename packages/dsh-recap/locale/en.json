@@ -24,5 +24,17 @@
     "autoIdle": "Generates automatically after {minutes} min idle",
     "failed": "Recap generation failed.",
     "updateFailed": "Could not update the recap."
+  },
+  "config": {
+    "title": "Recap model",
+    "description": "Which model writes the one-line recap. While unpinned, each Session uses its own model route.",
+    "provider": "Provider",
+    "model": "Model",
+    "save": "Save",
+    "reset": "Follow the session route",
+    "saved": "Saved.",
+    "loading": "Reading models…",
+    "noModels": "This provider advertises no models.",
+    "refresh": "Refresh the model list"
   }
 }

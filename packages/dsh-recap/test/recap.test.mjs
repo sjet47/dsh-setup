@@ -49,6 +49,13 @@ function makeLlm(reply, gate) {
     listProviders() {
       return [{ id: 'deepseek', name: 'DeepSeek' }]
     },
+    async listModels(provider) {
+      if (provider !== 'deepseek') throw new Error(`unknown provider ${provider}`)
+      return [
+        { provider, id: 'deepseek-chat', name: 'DeepSeek Chat' },
+        { provider, id: 'deepseek-reasoner', name: 'DeepSeek Reasoner' },
+      ]
+    },
   }
 }
 
@@ -334,6 +341,77 @@ test('old recap files are pruned at activation', async () => {
   apply(harness.ctx)
   assert.equal(existsSync(old), false)
   assert.deepEqual(readdirSync(dir).filter((name) => name.startsWith('old-session')), [])
+})
+
+test('the model catalog route lists providers with their models', async () => {
+  freshHome()
+  const harness = makeContext(makeSession(), { llm: makeLlm('unused') })
+  apply(harness.ctx)
+  const response = await harness.routes
+    .get('/api/dsh-recap/models')
+    .fetch(new Request('http://x/api/dsh-recap/models'))
+  assert.equal(response.status, 200)
+  const payload = await jsonOf(response)
+  assert.equal(payload.current, undefined)
+  assert.equal(payload.providers.length, 1)
+  assert.equal(payload.providers[0].id, 'deepseek')
+  assert.deepEqual(payload.providers[0].models.map((entry) => entry.id), ['deepseek-chat', 'deepseek-reasoner'])
+})
+
+test('a provider whose catalog fails still appears with its error', async () => {
+  freshHome()
+  const llm = {
+    ...makeLlm('unused'),
+    async listModels() {
+      throw new Error('adapter offline')
+    },
+  }
+  const harness = makeContext(makeSession(), { llm })
+  apply(harness.ctx)
+  const payload = await jsonOf(
+    await harness.routes.get('/api/dsh-recap/models').fetch(new Request('http://x/api/dsh-recap/models')),
+  )
+  assert.equal(payload.providers.length, 1)
+  assert.deepEqual(payload.providers[0].models, [])
+  assert.match(payload.providers[0].error, /adapter offline/)
+})
+
+test('the config route pins and clears the model, and rejects an unknown provider', async () => {
+  const home = freshHome()
+  const harness = makeContext(makeSession(), { llm: makeLlm('unused') })
+  apply(harness.ctx)
+  const route = harness.routes.get('/api/dsh-recap/config')
+  const post = (body) =>
+    route.fetch(
+      new Request('http://x/api/dsh-recap/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    )
+
+  const saved = await post({ provider: 'deepseek', model: 'deepseek-reasoner' })
+  assert.equal(saved.status, 200)
+  assert.deepEqual((await jsonOf(saved)).current, { provider: 'deepseek', model: 'deepseek-reasoner' })
+  assert.equal(JSON.parse(readFileSync(join(home, 'dsh-recap.json'), 'utf8')).model, 'deepseek-reasoner')
+
+  const models = await jsonOf(
+    await harness.routes.get('/api/dsh-recap/models').fetch(new Request('http://x/api/dsh-recap/models')),
+  )
+  assert.deepEqual(models.current, { provider: 'deepseek', model: 'deepseek-reasoner' })
+
+  const unknown = await post({ provider: 'other', model: 'x' })
+  assert.equal(unknown.status, 400)
+  assert.match((await jsonOf(unknown)).error, /Unknown provider "other"/)
+
+  const missing = await post({ provider: 'deepseek' })
+  assert.equal(missing.status, 400)
+
+  const reset = await post({ reset: true })
+  assert.equal(reset.status, 200)
+  assert.equal((await jsonOf(reset)).current, null)
+  assert.equal(existsSync(join(home, 'dsh-recap.json')), true)
+  assert.deepEqual(JSON.parse(readFileSync(join(home, 'dsh-recap.json'), 'utf8')), {})
 })
 
 test('empty conversations and unknown sessions fail loudly', async () => {

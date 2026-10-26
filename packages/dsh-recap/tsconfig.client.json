@@ -32,6 +32,6 @@
   },
   "include": [
     "src/client.tsx",
-    "types/shell-overlay.d.ts"
+    "types/slots.d.ts"
   ]
 }

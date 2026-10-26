@@ -27,6 +27,12 @@ A generation that finishes after the log moved on (an event landed, or a human t
 | `/recap config reset` | Follow the session's own route again |
 | `/recap clear` | Forget the current recap **on disk too**, and cancel a pending automatic one |
 
+The same pin is editable from the **Plugins** page: the bundle's page carries a
+**Recap model** section with provider and model selectors, **Save**, **Follow the
+session route**, and a refresh control for the provider catalog. Both entry
+points read and write one store, so a change from either shows up in `/recap
+status` immediately.
+
 ## UI
 
 1. **`/recap`** opens a panel: the full recap, the model that produced it, whether it is current or stale, and **Regenerate** / **Dismiss**. The bare invocation is a client-side command decoration, so nothing goes to the model; `/recap status|config|clear|help` still run on the Host and answer as text.
@@ -34,7 +40,8 @@ A generation that finishes after the log moved on (an event landed, or a human t
 3. The panel lives in the frame-wide `shell.overlay` slot (not a portal into `document.body`), so the shell owns its stacking order and mask. It targets the Session in the centre column and closes when that Session changes.
 4. The line is not full-bleed: the dock allocates the whole conversation column, so the card constrains itself with the host's own geometry (`--dsh-composer-card-max-width`, `--dsh-composer-side-clearance`, `--dsh-composer-dock-inset`) and ends up the same width as the transcript text, centred over the composer.
 5. The card is opaque: it floats over the scrolling transcript, so it paints the host's menu tint over the base layer instead of a translucent fill. Otherwise text scrolling underneath reads through the recap copy.
-6. Both the line and the panel use `--dsw-alias-*` tokens and scale from `--dsh-content-font-size`. The panel is a real modal: `aria-modal`, initial focus, a Tab trap, Escape to close, and focus returning to the opener. Copy comes from the Client locale service (`zh`/`en`).
+6. **Plugins page** (`plugins.bundle.config`, keyed `dsh-recap`): the **Recap model** section described under Model selection, so the pin is configurable without typing a command.
+7. Both the line, the panel, and the configuration section use `--dsw-alias-*` tokens and scale from `--dsh-content-font-size`. The panel is a real modal: `aria-modal`, initial focus, a Tab trap, Escape to close, and focus returning to the opener. Copy comes from the Client locale service (`zh`/`en`).
 
 The composer line hides on the next human message and reappears when a new recap is generated.
 
@@ -48,6 +55,17 @@ The composer line hides on the next human message and reappears when a new recap
 Records are written atomically through a temp file and rename, with mode `0600` in a `0700` directory: a recap names files and decisions, so it must not be world-readable. Records untouched for `retentionDays` are pruned at activation.
 
 A recap is current while the session log length is unchanged; any new event makes it stale. Dismissing persists, so a reload does not resurrect it. File storage is deliberate: a third-party bundle resolves its own copy of `@deepseek-ai/dsh-session`, so the private-brand `appendPluginRecord` entry point cannot write to the runtime's Session.
+
+## Model selection
+
+The pin is global — one `$DSH_HOME/dsh-recap.json` for every Session — and
+cleared by `reset`, which makes each Session recap with its own current route.
+The Plugins page reads the catalog through `GET /api/dsh-recap/models`
+(`ctx.llm.listProviders()` plus each adapter's `listModels()`, cached for 60 s,
+5 s per provider) and writes the pin through `POST /api/dsh-recap/config`. A
+provider whose catalog fails still appears, with its error, so the page can
+explain an empty model list. Only a registered provider is accepted; the model
+id is free-form because catalog membership does not constrain routing.
 
 ## Configuration
 

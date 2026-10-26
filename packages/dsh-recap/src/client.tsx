@@ -43,6 +43,20 @@ const EN: Record<string, string> = {
   'panel.autoIdle': 'Generates automatically after {minutes} min idle',
   'panel.failed': 'Recap generation failed.',
   'panel.updateFailed': 'Could not update the recap.',
+  'config.title': 'Recap model',
+  'config.description': 'Which model writes the one-line recap. While unpinned, each Session uses its own model route.',
+  'config.provider': 'Provider',
+  'config.model': 'Model',
+  'config.save': 'Save',
+  'config.reset': 'Follow the session route',
+  'config.summaryPinned': '{provider}/{model}',
+  'config.summaryAuto': 'Follows the session route',
+  'config.saved': 'Saved.',
+  'config.loading': 'Reading models…',
+  'config.loadFailed': 'Could not read the model list: {reason}',
+  'config.noModels': 'This provider advertises no models.',
+  'config.saveFailed': 'Could not save: {reason}',
+  'config.refresh': 'Refresh the model list',
 }
 const ZH: Record<string, string> = {
   'action.label': '摘要',
@@ -63,6 +77,20 @@ const ZH: Record<string, string> = {
   'panel.autoIdle': '闲置 {minutes} 分钟后自动生成',
   'panel.failed': '生成摘要失败。',
   'panel.updateFailed': '无法更新摘要。',
+  'config.title': '摘要模型',
+  'config.description': '用哪个模型生成一行摘要。不指定时，每个会话沿用自己当前的模型。',
+  'config.provider': '提供方',
+  'config.model': '模型',
+  'config.save': '保存',
+  'config.reset': '跟随会话路由',
+  'config.summaryPinned': '{provider}/{model}',
+  'config.summaryAuto': '跟随会话路由',
+  'config.saved': '已保存。',
+  'config.loading': '正在读取模型…',
+  'config.loadFailed': '读取模型列表失败：{reason}',
+  'config.noModels': '该提供方没有公布任何模型。',
+  'config.saveFailed': '保存失败：{reason}',
+  'config.refresh': '刷新模型列表',
 }
 
 interface RecapWire {
@@ -584,6 +612,264 @@ function RecapOverlay({ useSessions, locale }: { useSessions: UseSessionsLike; l
   return <RecapPanel key={open} sessionId={open} onClose={() => setRecapOpen(undefined)} locale={locale} />
 }
 
+/* ── Plugins page configuration ───────────────────────────────────────────── */
+
+/** Wire shape of GET `/api/dsh-recap/models`. */
+interface ModelCatalog {
+  current?: { provider: string; model: string }
+  providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string }>; error?: string }>
+}
+
+/**
+ * The bundle's own configuration section on its Plugins page: pick the model
+ * that writes recaps, or clear the pin so each Session follows its own route.
+ * The Host owns the stored pin and the provider catalog; this view only reads
+ * and writes them through the authenticated routes.
+ */
+function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale: LocaleRuntime }): ReactNode {
+  const t = useT(locale)
+  const [catalog, setCatalog] = useState<ModelCatalog | undefined>(undefined)
+  const [loadError, setLoadError] = useState<string | undefined>(undefined)
+  const [provider, setProvider] = useState('')
+  const [model, setModel] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | undefined>(undefined)
+  const [failure, setFailure] = useState<string | undefined>(undefined)
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(
+    async (refresh = false): Promise<void> => {
+      setLoading(true)
+      setLoadError(undefined)
+      try {
+        const response = await fetch(`/api/dsh-recap/models${refresh ? '?refresh=1' : ''}`, {
+          credentials: 'same-origin',
+        })
+        const payload = (await response.json()) as ModelCatalog & { error?: unknown }
+        if (!response.ok) {
+          throw new Error(typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`)
+        }
+        setCatalog(payload)
+        const pinned = payload.current
+        const first = payload.providers[0]
+        setProvider(pinned?.provider ?? first?.id ?? '')
+        const models = payload.providers.find((entry) => entry.id === (pinned?.provider ?? first?.id))?.models ?? []
+        setModel(pinned?.model ?? models[0]?.id ?? '')
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (view === 'page') void load()
+  }, [view, load])
+
+  const pinned = catalog?.current
+  if (view === 'summary') {
+    return (
+      <span>
+        {pinned === undefined ? t('config.summaryAuto') : t('config.summaryPinned', { provider: pinned.provider, model: pinned.model })}
+      </span>
+    )
+  }
+
+  const providers = catalog?.providers ?? []
+  const models = providers.find((entry) => entry.id === provider)?.models ?? []
+  const providerError = providers.find((entry) => entry.id === provider)?.error
+
+  const save = async (): Promise<void> => {
+    setBusy(true)
+    setMessage(undefined)
+    setFailure(undefined)
+    try {
+      const response = await fetch('/api/dsh-recap/config', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider, model }),
+      })
+      const payload = (await response.json()) as { current?: { provider: string; model: string }; error?: unknown }
+      if (!response.ok) {
+        throw new Error(typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`)
+      }
+      setCatalog((previous) => (previous === undefined ? previous : { ...previous, current: payload.current }))
+      setProvider(payload.current?.provider ?? provider)
+      setModel(payload.current?.model ?? model)
+      setMessage(t('config.saved'))
+    } catch (error) {
+      setFailure(t('config.saveFailed', { reason: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const reset = async (): Promise<void> => {
+    setBusy(true)
+    setMessage(undefined)
+    setFailure(undefined)
+    try {
+      const response = await fetch('/api/dsh-recap/config', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reset: true }),
+      })
+      const payload = (await response.json()) as { error?: unknown }
+      if (!response.ok) {
+        throw new Error(typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`)
+      }
+      setCatalog((previous) => {
+        if (previous === undefined) return previous
+        const { current: _dropped, ...rest } = previous
+        return rest
+      })
+      setMessage(t('config.summaryAuto'))
+    } catch (error) {
+      setFailure(t('config.saveFailed', { reason: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const selectStyle: CSSProperties = {
+    boxSizing: 'border-box',
+    minWidth: 0,
+    flex: 1,
+    padding: '4px 8px',
+    borderRadius: 'var(--dsw-radius-sm, 6px)',
+    border: `0.5px solid ${BORDER}`,
+    background: 'var(--dsw-alias-bg-layer-2, transparent)',
+    color: 'inherit',
+    font: 'inherit',
+    fontSize: scale(0.92),
+  }
+  const labelStyle: CSSProperties = {
+    flex: 'none',
+    width: 64,
+    color: MUTED,
+    fontSize: scale(0.9),
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: FONT }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <strong style={{ fontSize: scale(1) }}>{t('config.title')}</strong>
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          style={actionStyle}
+          onClick={() => void load(true)}
+          disabled={loading || busy}
+          title={t('config.refresh')}
+          aria-label={t('config.refresh')}
+        >
+          ↻
+        </button>
+      </div>
+      <p style={{ margin: 0, color: MUTED, fontSize: scale(0.9), lineHeight: 1.5 }}>{t('config.description')}</p>
+
+      {loadError !== undefined ? (
+        <p role="status" style={{ margin: 0, color: ERROR, fontSize: scale(0.9) }}>
+          {t('config.loadFailed', { reason: loadError })}
+        </p>
+      ) : null}
+
+      {catalog === undefined && loadError === undefined ? (
+        <p role="status" style={{ margin: 0, color: MUTED, fontSize: scale(0.9) }}>
+          {t('config.loading')}
+        </p>
+      ) : null}
+
+      {providers.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={labelStyle} htmlFor="dsh-recap-provider">
+              {t('config.provider')}
+            </label>
+            <select
+              id="dsh-recap-provider"
+              value={provider}
+              disabled={busy}
+              onChange={(event) => {
+                const nextProvider = event.target.value
+                setProvider(nextProvider)
+                const nextModels = providers.find((entry) => entry.id === nextProvider)?.models ?? []
+                setModel(nextModels[0]?.id ?? '')
+                setMessage(undefined)
+              }}
+              style={selectStyle}
+            >
+              {providers.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name === entry.id ? entry.id : `${entry.name} (${entry.id})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <label style={labelStyle} htmlFor="dsh-recap-model">
+              {t('config.model')}
+            </label>
+            <select
+              id="dsh-recap-model"
+              value={model}
+              disabled={busy || models.length === 0}
+              onChange={(event) => {
+                setModel(event.target.value)
+                setMessage(undefined)
+              }}
+              style={selectStyle}
+            >
+              {models.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name === entry.id ? entry.id : `${entry.name} (${entry.id})`}
+                </option>
+              ))}
+            </select>
+          </div>
+          {models.length === 0 ? (
+            <p role="status" style={{ margin: 0, color: WARN, fontSize: scale(0.88) }}>
+              {providerError ?? t('config.noModels')}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button
+          type="button"
+          style={{ ...actionStyle, color: TEXT, padding: '3px 10px' }}
+          onClick={() => void save()}
+          disabled={busy || provider === '' || model === ''}
+        >
+          {t('config.save')}
+        </button>
+        <button type="button" style={actionStyle} onClick={() => void reset()} disabled={busy || pinned === undefined}>
+          {t('config.reset')}
+        </button>
+        <span style={{ flex: 1 }} />
+        <span style={{ color: MUTED, fontSize: scale(0.88) }}>
+          {pinned === undefined ? t('config.summaryAuto') : t('config.summaryPinned', { provider: pinned.provider, model: pinned.model })}
+        </span>
+      </div>
+
+      {failure !== undefined ? (
+        <p role="status" style={{ margin: 0, color: ERROR, fontSize: scale(0.9) }}>
+          {failure}
+        </p>
+      ) : message !== undefined ? (
+        <p role="status" style={{ margin: 0, color: MUTED, fontSize: scale(0.9) }}>
+          {message}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
 /* ── registration ─────────────────────────────────────────────────────────── */
 
 /** Open the panel from the `/recap` client action. */
@@ -630,6 +916,14 @@ export function apply(ctx: Context): void {
       },
       Overlay,
     )
+  })
+
+  // The bundle's own configuration on the Plugins page, keyed by package name.
+  ctx.slots.inject('plugins.bundle.config', () => {
+    const Config = (props: { view: 'summary' | 'page' }) => (
+      <RecapBundleConfig view={props.view} locale={ctx.locale} />
+    )
+    return ctx.slots.register({ name: 'plugins.bundle.config', key: 'dsh-recap' }, Config)
   })
 
   ctx.inject(['commandUi'], (scoped) => {

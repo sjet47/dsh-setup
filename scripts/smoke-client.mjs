@@ -72,21 +72,26 @@ for (const pkg of ['dsh-mr', 'dsh-note', 'dsh-recap']) {
   }
   loaded.exports.apply(ctx)
   if (regs.length === 0) throw new Error(`${pkg}: registered no slot`)
+  /** Keyed slots take `key`; render their page view, not the summary. */
+  const propsFor = (options) => ({
+    ...standardProps,
+    ...(options.name === 'plugins.bundle.config' ? { view: 'page' } : {}),
+  })
   let htmlLength = 0
-  for (const { component } of regs) {
-    htmlLength += renderToString(React.createElement(component, standardProps)).length
+  for (const { options, component } of regs) {
+    htmlLength += renderToString(React.createElement(component, propsFor(options))).length
   }
   // Open the panel through the same client action `/memory` and `/recap` run,
   // then render again so the panel bodies (not just the triggers) are covered.
   for (const decoration of decorations) decoration.ui.run({ sessionId: 'session-test' })
   let openLength = 0
-  for (const { component } of regs) {
-    openLength += renderToString(React.createElement(component, standardProps)).length
+  for (const { options, component } of regs) {
+    openLength += renderToString(React.createElement(component, propsFor(options))).length
   }
   results.push({
     pkg,
     id: loaded.id,
-    slots: regs.map((reg) => `${reg.options.name}#${reg.options.id}`).join(', '),
+    slots: regs.map((reg) => `${reg.options.name}#${reg.options.key ?? reg.options.id}`).join(', '),
     commandActions: decorations.map((d) => `${d.name}:${d.ui.kind}`).join(', '),
     exports: Object.keys(loaded.exports).join(','),
     htmlLength,
