@@ -7,13 +7,17 @@
  * status through an authenticated exact Fetch route; the `/mr` command renders
  * the same value as text.
  *
+ * The session's effective directory comes from the `workingDirectory` service
+ * when the composition provides it, so a Session that moved with the
+ * `working_directory` tool is looked up in the directory it actually uses.
+ *
  * Ported from pi-mr (pi-setup), keeping its forge layer unchanged.
  * @module dsh-mr
  */
 import { execFile } from 'node:child_process'
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import {
@@ -28,7 +32,7 @@ import {
   type Forge,
   type MrInfo,
 } from './forge.js'
-import { renderMrDetail, renderMrLine } from './format.js'
+import { renderMrDetail } from './format.js'
 
 export const name = 'mr'
 export const inject = ['commands', 'connection', 'sessions'] as const
@@ -47,6 +51,8 @@ export const Config: z<Config> = z.object({
 
 const GIT_TIMEOUT_MS = 5_000
 const CLI_TIMEOUT_MS = 20_000
+/** Re-detect the forge after this long, so a newly added remote is noticed. */
+const FORGE_TTL_MS = 10 * 60_000
 
 interface ExecResult {
   code: number
@@ -82,20 +88,31 @@ export interface MrStatus {
   fetchedAt: number
 }
 
-interface CacheEntry {
-  /** Branch the cached status belongs to. */
-  branch: string
-  at: number
-  status: MrStatus
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  })
 }
 
-interface CwdState {
-  forgeResolved: boolean
-  forge?: Forge
-}
-
-function statusJson(status: MrStatus): string {
-  return JSON.stringify(status)
+/**
+ * The directory this Session actually works in: the committed working
+ * directory when the service is present, else the Session header's initial
+ * cwd. Optional because a minimal composition may omit the service.
+ */
+function sessionCwd(ctx: Context, sessionId: string): string | undefined {
+  const session = ctx.sessions.get(sessionId as SessionId)
+  if (session === undefined) return undefined
+  try {
+    const service = (ctx as unknown as { get?(name: string): unknown }).get?.('workingDirectory') as
+      | { get(session: Session): string }
+      | undefined
+    const cwd = service?.get(session)
+    if (typeof cwd === 'string' && cwd !== '') return cwd
+  } catch {
+    // Fall through to the header value.
+  }
+  return session.header.cwd
 }
 
 /**
@@ -104,32 +121,31 @@ function statusJson(status: MrStatus): string {
  * @param ctx - plugin context.
  * @param config - resolved plugin configuration.
  */
-export function apply(ctx: Context, config: Config): void {
-  const cwdState = new Map<string, CwdState>()
-  const cache = new Map<string, CacheEntry>()
+export function apply(ctx: Context, config: Config = Config()): void {
+  const cache = new Map<string, { branch: string; at: number; status: MrStatus }>()
   const inflight = new Map<string, Promise<MrStatus>>()
+  const forgeCache = new Map<string, { at: number; value: Promise<Forge | undefined> }>()
 
-  function stateFor(cwd: string): CwdState {
-    let state = cwdState.get(cwd)
-    if (state === undefined) {
-      state = { forgeResolved: false }
-      cwdState.set(cwd, state)
-    }
-    return state
-  }
-
-  function sessionCwd(sessionId: string): string | undefined {
-    const session = ctx.sessions.get(sessionId as SessionId)
-    return session?.header.cwd
-  }
-
-  async function resolveForge(cwd: string): Promise<Forge | undefined> {
-    const state = stateFor(cwd)
-    if (state.forgeResolved) return state.forge
-    state.forgeResolved = true
-    const res = await run('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], cwd, GIT_TIMEOUT_MS)
-    if (res.code === 0) state.forge = detectForge(parseRemoteUrls(res.stdout))
-    return state.forge
+  /**
+   * Resolve the forge once per working directory. The promise itself is cached
+   * (not a boolean flag) so concurrent first readers await the same lookup
+   * instead of observing a half-initialized state; a rejected lookup is
+   * dropped so the next call retries.
+   */
+  function resolveForge(cwd: string): Promise<Forge | undefined> {
+    const now = Date.now()
+    const cached = forgeCache.get(cwd)
+    if (cached !== undefined && now - cached.at < FORGE_TTL_MS) return cached.value
+    const value = (async (): Promise<Forge | undefined> => {
+      const res = await run('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], cwd, GIT_TIMEOUT_MS)
+      if (res.code !== 0) return undefined
+      return detectForge(parseRemoteUrls(res.stdout))
+    })()
+    forgeCache.set(cwd, { at: now, value })
+    value.catch(() => {
+      if (forgeCache.get(cwd)?.value === value) forgeCache.delete(cwd)
+    })
+    return value
   }
 
   async function fillGitlabCi(cwd: string, info: MrInfo): Promise<void> {
@@ -189,19 +205,18 @@ export function apply(ctx: Context, config: Config): void {
    * @returns the status, or undefined when the session or its cwd is unknown.
    */
   async function statusFor(sessionId: string, force = false): Promise<MrStatus | undefined> {
-    const cwd = sessionCwd(sessionId)
+    const cwd = sessionCwd(ctx, sessionId)
     if (cwd === undefined) return undefined
     const branchRes = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, GIT_TIMEOUT_MS)
     const branch = branchRes.code === 0 ? branchRes.stdout.trim() : ''
     if (branch === '' || branch === 'HEAD') {
       return { cwd, branch: null, forge: null, info: null, fetchedAt: Date.now() }
     }
-    const key = `${sessionId}`
-    const cached = cache.get(key)
+    const cached = cache.get(sessionId)
     if (!force && cached !== undefined && cached.branch === branch && Date.now() - cached.at < config.refreshMs) {
       return cached.status
     }
-    return refresh(cwd, key, branch)
+    return refresh(cwd, sessionId, branch)
   }
 
   ctx.effect(() =>
@@ -209,16 +224,10 @@ export function apply(ctx: Context, config: Config): void {
       name: 'mr',
       description: "Show this branch's merge request or pull request",
       handler: async (invocation) => {
+        if (!config.enabled) return { kind: 'success', text: 'dsh-mr is disabled in this profile.' }
         const raw = invocation.rawInput.trim()
-        if (raw === 'status') {
-          const status = await statusFor(String(invocation.agent.id))
-          if (status === undefined) return { kind: 'error', text: 'No session working directory.' }
-          if (status.info === null) {
-            return { kind: 'success', text: status.error ?? `No merge request for ${status.branch ?? 'this checkout'}.` }
-          }
-          return { kind: 'success', text: renderMrDetail(status.info) }
-        }
-        const status = await statusFor(String(invocation.agent.id), true)
+        if (raw !== '' && raw !== 'status') return { kind: 'error', text: 'Usage: /mr [status]' }
+        const status = await statusFor(String(invocation.agent.id), raw === '')
         if (status === undefined) return { kind: 'error', text: 'No session working directory.' }
         if (status.info === null) {
           return { kind: 'success', text: status.error ?? `No merge request for ${status.branch ?? 'this checkout'}.` }
@@ -234,21 +243,30 @@ export function apply(ctx: Context, config: Config): void {
       methods: ['GET'],
       requestBody: 'buffered',
       fetch: async (request: Request): Promise<Response> => {
-        if (!config.enabled) return Response.json({ info: null })
+        if (!config.enabled) {
+          return json({ enabled: false, cwd: '', branch: null, forge: null, info: null, fetchedAt: Date.now(), refreshMs: config.refreshMs })
+        }
         const url = new URL(request.url)
         const sessionId = url.searchParams.get('session')
-        if (sessionId === null || sessionId === '') {
-          return Response.json({ error: 'missing session' }, { status: 400 })
-        }
+        if (sessionId === null || sessionId === '') return json({ error: 'missing session' }, 400)
         const status = await statusFor(sessionId)
-        return new Response(statusJson(status ?? { cwd: '', branch: null, forge: null, info: null, fetchedAt: Date.now() }), {
-          headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+        return json({
+          enabled: true,
+          refreshMs: config.refreshMs,
+          ...(status ?? { cwd: '', branch: null, forge: null, info: null, fetchedAt: Date.now() }),
         })
       },
     }),
   )
 
+  // Per-session caches live as long as their session; drop them with it.
+  ctx.on('session/disposed', (session: Session) => {
+    const key = String(session.id)
+    cache.delete(key)
+    inflight.delete(key)
+  })
+
   ctx.logger.debug('dsh-mr loaded')
 }
 
-export { renderMrLine }
+export { renderMrLine } from './format.js'

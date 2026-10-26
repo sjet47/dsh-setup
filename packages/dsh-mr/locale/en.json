@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "title": "MR / PR Status",
+    "description": "Shows the current branch's GitLab merge request or GitHub pull request in the session header and answers /mr."
+  },
+  "chip": {
+    "open": "Open the merge request in the browser",
+    "conflicts": "conflicts with the target branch",
+    "ciSuccess": "CI passed",
+    "ciFailed": "CI failed",
+    "ciRunning": "CI running",
+    "stateOpened": "open",
+    "stateDraft": "draft",
+    "stateMerged": "merged",
+    "stateClosed": "closed"
+  }
+}

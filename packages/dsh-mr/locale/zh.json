@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "title": "MR / PR 状态",
+    "description": "在会话标题旁显示当前分支的 GitLab 合并请求或 GitHub 拉取请求，并响应 /mr 命令。"
+  },
+  "chip": {
+    "open": "在浏览器中打开合并请求",
+    "conflicts": "与目标分支存在冲突",
+    "ciSuccess": "CI 通过",
+    "ciFailed": "CI 失败",
+    "ciRunning": "CI 运行中",
+    "stateOpened": "进行中",
+    "stateDraft": "草稿",
+    "stateMerged": "已合并",
+    "stateClosed": "已关闭"
+  }
+}
