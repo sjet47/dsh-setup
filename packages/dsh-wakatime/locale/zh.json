@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WakaTime",
+    "description": "将会话、工具活动与 AI 代码行变更作为 WakaTime 心跳上报。"
+  }
+}

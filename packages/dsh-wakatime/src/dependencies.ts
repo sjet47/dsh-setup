@@ -1,16 +1,33 @@
 import AdmZip from 'adm-zip';
 import childProcess from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import tls from 'node:tls';
 import type { Logger } from './logger.js';
 import type { Options } from './options.js';
-import { buildExecOptions, isWindows } from './utils.js';
+import { buildExecOptions, getPackageVersion, isWindows } from './utils.js';
+
+/** Bound every GitHub request so plugin activation cannot hang forever. */
+const HTTP_TIMEOUT_MS = 30_000;
+/** Largest JSON body accepted from the GitHub API. */
+const MAX_JSON_BYTES = 2 * 1024 * 1024;
+/** Largest release archive accepted before extraction. */
+const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const CHECKSUMS_URL = 'https://github.com/wakatime/wakatime-cli/releases/latest/download/checksums_sha256.txt';
+
+/** SHA-256 of a file, streamed so a large archive never sits in memory. */
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(fs.createReadStream(file), hash);
+  return hash.digest('hex');
+}
 
 export class Dependencies {
   private options: Options;
@@ -37,7 +54,7 @@ export class Dependencies {
     }
 
     const ext = isWindows() ? '.exe' : '';
-    const binary = `wakatime-cli-${this.osName()}-${this.architecture()}${ext}`;
+    const binary = this.binaryName();
     const preferred = path.join(this.resourcesLocation, `wakatime-cli${ext}`);
     const extracted = path.join(this.resourcesLocation, binary);
 
@@ -156,19 +173,30 @@ export class Dependencies {
   private async installCli(): Promise<void> {
     const ext = isWindows() ? '.exe' : '';
     const archivePath = path.join(this.resourcesLocation, `wakatime-cli-${Date.now()}.zip`);
-    const binary = `wakatime-cli-${this.osName()}-${this.architecture()}${ext}`;
+    const binary = this.binaryName();
     const downloadedTarget = path.join(this.resourcesLocation, binary);
     const preferredTarget = path.join(this.resourcesLocation, `wakatime-cli${ext}`);
     const proxy = this.options.getSetting('settings', 'proxy');
     const noSSLVerify = this.options.getSetting('settings', 'no_ssl_verify') === 'true';
-
-    this.logger.info(`Downloading wakatime-cli from ${this.cliDownloadUrl()}`);
-
-    await this.downloadToFile(this.cliDownloadUrl(), archivePath, {
+    const requestOptions = {
       headers: this.getRequestHeaders(),
       proxy: proxy || undefined,
       noSSLVerify,
-    });
+    };
+
+    this.logger.info(`Downloading wakatime-cli from ${this.cliDownloadUrl()}`);
+
+    const expected = await this.expectedChecksum(binary, requestOptions);
+    await this.downloadToFile(this.cliDownloadUrl(), archivePath, requestOptions);
+
+    if (expected !== undefined) {
+      const actual = await sha256File(archivePath);
+      if (actual !== expected) {
+        fs.rmSync(archivePath, { force: true });
+        throw new Error(`checksum mismatch for ${binary}: expected ${expected}, got ${actual}`);
+      }
+      this.logger.debug(`Verified ${binary} against checksums_sha256.txt.`);
+    }
 
     const backupTarget = fs.existsSync(preferredTarget) ? `${preferredTarget}.backup` : undefined;
     if (backupTarget && fs.existsSync(preferredTarget)) {
@@ -177,7 +205,12 @@ export class Dependencies {
 
     try {
       const zip = new AdmZip(archivePath);
-      zip.extractAllTo(this.resourcesLocation, true);
+      // Extract only the expected binary: a release archive is downloaded
+      // content, and it must not be allowed to scatter files into the home dir.
+      const entry = zip.getEntries().find((candidate) => candidate.entryName === binary);
+      if (entry === undefined) throw new Error(`release archive has no ${binary}`);
+      fs.rmSync(downloadedTarget, { force: true });
+      zip.extractEntryTo(entry, this.resourcesLocation, false, true);
       if (!fs.existsSync(downloadedTarget) && fs.existsSync(preferredTarget)) {
         this.cliLocation = preferredTarget;
       } else if (fs.existsSync(downloadedTarget)) {
@@ -206,7 +239,34 @@ export class Dependencies {
   }
 
   private cliDownloadUrl(): string {
-    return `${this.githubDownloadUrl}/wakatime-cli-${this.osName()}-${this.architecture()}.zip`;
+    return `${this.githubDownloadUrl}/${this.binaryName()}.zip`;
+  }
+
+  private binaryName(): string {
+    const ext = isWindows() ? '.exe' : '';
+    return `wakatime-cli-${this.osName()}-${this.architecture()}${ext}`;
+  }
+
+  /**
+   * Expected SHA-256 for this platform's archive. The release publishes
+   * `checksums_sha256.txt`; when it is unavailable the install proceeds with a
+   * warning instead of blocking on GitHub.
+   */
+  private async expectedChecksum(
+    binary: string,
+    options: { headers?: Record<string, string>; proxy?: string; noSSLVerify?: boolean },
+  ): Promise<string | undefined> {
+    try {
+      const text = await this.getText(CHECKSUMS_URL, options);
+      for (const line of text.split('\n')) {
+        const [hash, name] = line.trim().split(/\s+/);
+        if (hash !== undefined && name === binary && /^[0-9a-f]{64}$/i.test(hash)) return hash.toLowerCase();
+      }
+      this.logger.warn(`checksums_sha256.txt has no entry for ${binary}; installing without verification.`);
+    } catch (error) {
+      this.logger.warn(`Unable to verify the wakatime-cli checksum: ${String(error)}`);
+    }
+    return undefined;
   }
 
   private architecture(): string {
@@ -222,8 +282,32 @@ export class Dependencies {
 
   private getRequestHeaders(): Record<string, string> {
     return {
-      'User-Agent': 'github.com/ttttmr/pi-wakatime',
+      'User-Agent': `dsh-wakatime/${getPackageVersion('dsh-wakatime')}`,
     };
+  }
+
+  private async getText(
+    url: string,
+    options?: { headers?: Record<string, string>; proxy?: string; noSSLVerify?: boolean },
+  ): Promise<string> {
+    const response = await this.requestWithRedirects(url, options);
+    const statusCode = response.statusCode ?? 0;
+    if (statusCode < 200 || statusCode >= 300) {
+      response.resume();
+      throw new Error(`Unexpected status code ${statusCode}`);
+    }
+    const chunks: Buffer[] = [];
+    let received = 0;
+    for await (const chunk of response) {
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      received += buffer.length;
+      if (received > MAX_JSON_BYTES) {
+        response.destroy();
+        throw new Error(`response exceeds ${MAX_JSON_BYTES} bytes`);
+      }
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks).toString('utf-8');
   }
 
   private async getJson(
@@ -233,9 +317,16 @@ export class Dependencies {
     const response = await this.requestWithRedirects(url, options);
     const statusCode = response.statusCode ?? 0;
     const chunks: Buffer[] = [];
+    let received = 0;
 
     for await (const chunk of response) {
-      chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      received += buffer.length;
+      if (received > MAX_JSON_BYTES) {
+        response.destroy();
+        throw new Error(`response exceeds ${MAX_JSON_BYTES} bytes`);
+      }
+      chunks.push(buffer);
     }
 
     const content = Buffer.concat(chunks).toString('utf-8');
@@ -256,7 +347,23 @@ export class Dependencies {
       response.resume();
       throw new Error(`Unexpected status code ${statusCode}`);
     }
-    await pipeline(response, fs.createWriteStream(outputFile));
+    const declared = Number(response.headers['content-length'] ?? '0');
+    if (Number.isFinite(declared) && declared > MAX_ARCHIVE_BYTES) {
+      response.destroy();
+      throw new Error(`download of ${declared} bytes exceeds ${MAX_ARCHIVE_BYTES} bytes`);
+    }
+    let received = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length;
+        if (received > MAX_ARCHIVE_BYTES) {
+          callback(new Error(`download exceeds ${MAX_ARCHIVE_BYTES} bytes`));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(response, limiter, fs.createWriteStream(outputFile));
   }
 
   private async requestWithRedirects(
@@ -338,6 +445,9 @@ export class Dependencies {
         }
 
         request.once('error', reject);
+        request.setTimeout(HTTP_TIMEOUT_MS, () => {
+          request?.destroy(new Error(`request timed out after ${HTTP_TIMEOUT_MS}ms`));
+        });
         request.end();
       } catch (error) {
         request?.destroy();

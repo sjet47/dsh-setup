@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { defaultLogPath } from './logger.js';
 import { getHomeDirectory } from './utils.js';
 
 export interface Setting {
@@ -21,7 +22,7 @@ export class Options {
     this.resourcesLocation = wakaFolder;
     this.configFile = path.join(home, '.wakatime.cfg');
     this.internalConfigFile = path.join(wakaFolder, 'wakatime-internal.cfg');
-    this.logFile = path.join(wakaFolder, 'pi-wakatime.log');
+    this.logFile = defaultLogPath();
   }
 
   public getSetting(section: string, key: string, internal = false): string | undefined {

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { getHomeDirectory } from './utils.js';
 
 export enum LogLevel {
   DEBUG = 0,
@@ -9,10 +9,14 @@ export enum LogLevel {
   ERROR,
 }
 
-const LOG_FILE = path.join(os.homedir(), '.wakatime', 'pi-wakatime.log');
+/** Diagnostic log beside WakaTime's own files, outside the pi plugin's log. */
+export function defaultLogPath(): string {
+  return path.join(getHomeDirectory(), '.wakatime', 'dsh-wakatime.log');
+}
 
 export class Logger {
   private level: LogLevel = LogLevel.INFO;
+  private file: string = defaultLogPath();
 
   public setLevel(level: LogLevel): void {
     this.level = level;
@@ -22,11 +26,19 @@ export class Logger {
     return this.level;
   }
 
+  public setFile(file: string): void {
+    this.file = file;
+  }
+
+  public getFile(): string {
+    return this.file;
+  }
+
   public log(level: LogLevel, message: string): void {
     if (level < this.level) return;
 
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}][${LogLevel[level]}] ${message}\n`);
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    fs.appendFileSync(this.file, `[${new Date().toISOString()}][${LogLevel[level]}] ${message}\n`);
   }
 
   public debug(message: string): void {
@@ -63,7 +75,7 @@ export class Logger {
   }
 }
 
-const globalLogger = globalThis as unknown as { logger?: Logger };
+const globalLogger = globalThis as unknown as { dshWakatimeLogger?: Logger };
 
-export const logger = globalLogger.logger ?? new Logger();
-globalLogger.logger = logger;
+export const logger = globalLogger.dshWakatimeLogger ?? new Logger();
+globalLogger.dshWakatimeLogger = logger;

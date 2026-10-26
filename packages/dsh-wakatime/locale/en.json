@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WakaTime",
+    "description": "Sends WakaTime heartbeats for sessions, tool activity and AI line changes."
+  }
+}

@@ -1,22 +1,60 @@
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import type { Dependencies } from './dependencies.js';
 import { logger } from './logger.js';
 import type { HeartbeatRequest, HeartbeatState } from './types.js';
-import { buildExecOptions, estimateEditLineChanges } from './utils.js';
+import { buildExecOptions, estimateEditLineChanges, getHomeDirectory } from './utils.js';
 
-const DEFAULT_STATE_DIR = path.join(os.homedir(), '.wakatime', 'pi-wakatime-state');
+/** dsh's own throttle/state directory, kept apart from pi-wakatime's. */
+export function defaultStateDir(): string {
+  return path.join(getHomeDirectory(), '.wakatime', 'dsh-wakatime-state');
+}
 export const SESSION_HEARTBEAT_INTERVAL_MS = 60_000;
 export const WAKATIME_CLI_TIMEOUT_MS = 30_000;
+/** Bound the pending queue: a long tool burst must not grow it without limit. */
+export const MAX_QUEUE_DEPTH = 100;
 
-export function getStateFilePath(stateKey: string, fallbackStateDir: string = DEFAULT_STATE_DIR): string {
-  if (path.isAbsolute(stateKey) || stateKey.includes(path.sep)) {
-    return `${stateKey}.wakatime`;
+/** One throttle record per Session id; ids are opaque, so they are encoded. */
+export function getStateFilePath(sessionId: string, stateDir: string = defaultStateDir()): string {
+  return path.join(stateDir, `${encodeURIComponent(sessionId)}.json`);
+}
+
+/**
+ * Delete throttle records that have not been touched for the retention window.
+ * Session ids are never reused, so an old record is pure garbage.
+ * @param stateDir - directory holding one JSON file per Session.
+ * @param retentionDays - keep records newer than this; 0 or less keeps all.
+ * @param now - clock injection for tests.
+ * @returns the number of removed files.
+ */
+export function pruneStateFiles(
+  stateDir: string = defaultStateDir(),
+  retentionDays = 30,
+  now: number = Date.now(),
+): number {
+  if (retentionDays <= 0) return 0;
+  let names: string[];
+  try {
+    names = fs.readdirSync(stateDir);
+  } catch {
+    return 0;
   }
-
-  return path.join(fallbackStateDir, `${encodeURIComponent(stateKey)}.json`);
+  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const file = path.join(stateDir, name);
+    try {
+      if (fs.statSync(file).mtimeMs < cutoff) {
+        fs.rmSync(file, { force: true });
+        removed += 1;
+      }
+    } catch (error) {
+      logger.debug(`Unable to prune ${name}: ${String(error)}`);
+    }
+  }
+  return removed;
 }
 
 type ExecFileCallback = (error: childProcess.ExecFileException | null, stdout: string, stderr: string) => void;
@@ -32,7 +70,12 @@ type HeartbeatTrackerOptions = {
   plugin: string;
   execFile?: ExecFileFn;
   now?: () => number;
-  stateFile?: string;
+  /** Directory holding one throttle record per Session. */
+  stateDir?: string;
+  /** Per-Session heartbeat throttle window. */
+  sessionIntervalMs?: number;
+  /** Pending queue cap; further requests are dropped until it drains. */
+  maxQueueDepth?: number;
 };
 
 type QueuedHeartbeat = {
@@ -42,7 +85,7 @@ type QueuedHeartbeat = {
 };
 
 export function shouldTrackTool(toolName: string): boolean {
-  return toolName === 'read' || toolName === 'write' || toolName === 'edit';
+  return toolName === 'read' || toolName === 'read_image' || toolName === 'write' || toolName === 'edit';
 }
 
 export function shouldSendSessionHeartbeat(
@@ -98,7 +141,9 @@ export class HeartbeatTracker {
   private plugin: string;
   private execFile: ExecFileFn;
   private now: () => number;
-  private fallbackStateDir: string;
+  private stateDir: string;
+  private sessionIntervalMs: number;
+  private maxQueueDepth: number;
   private queue: QueuedHeartbeat[] = [];
   private processing = false;
   private sessionHeartbeatsInFlight = new Set<string>();
@@ -110,7 +155,9 @@ export class HeartbeatTracker {
       childProcess.execFile(file, args, execOptions, callback);
     });
     this.now = options.now || (() => Date.now());
-    this.fallbackStateDir = options.stateFile || DEFAULT_STATE_DIR;
+    this.stateDir = options.stateDir || defaultStateDir();
+    this.sessionIntervalMs = options.sessionIntervalMs ?? SESSION_HEARTBEAT_INTERVAL_MS;
+    this.maxQueueDepth = options.maxQueueDepth ?? MAX_QUEUE_DEPTH;
   }
 
   public async init(): Promise<string> {
@@ -120,14 +167,23 @@ export class HeartbeatTracker {
   }
 
   public track(request: HeartbeatRequest): void {
+    if (this.queue.length >= this.maxQueueDepth) {
+      logger.warn(`Heartbeat queue is full (${this.maxQueueDepth}); dropping ${request.type} heartbeat.`);
+      return;
+    }
+
     if (request.type === 'session') {
       const lastHeartbeatAt = this.readState(this.getSessionStateFile(request.stateKey)).lastHeartbeatAt;
-      if (!shouldSendSessionHeartbeat(this.now(), lastHeartbeatAt)) {
+      if (!shouldSendSessionHeartbeat(this.now(), lastHeartbeatAt, this.sessionIntervalMs)) {
         return;
       }
       if (this.sessionHeartbeatsInFlight.has(request.stateKey)) {
         return;
       }
+      // A queued session heartbeat supersedes any older one for the same Session.
+      this.queue = this.queue.filter(
+        (pending) => pending.request.type !== 'session' || pending.request.stateKey !== request.stateKey,
+      );
       this.sessionHeartbeatsInFlight.add(request.stateKey);
     }
 
@@ -206,7 +262,7 @@ export class HeartbeatTracker {
   }
 
   private getSessionStateFile(sessionKey: string): string {
-    return getStateFilePath(sessionKey, this.fallbackStateDir);
+    return getStateFilePath(sessionKey, this.stateDir);
   }
 
   private readState(stateFile: string): HeartbeatState {

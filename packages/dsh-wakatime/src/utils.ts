@@ -34,15 +34,6 @@ export function buildExecOptions(stdin = false): childProcess.ExecFileOptions {
   return options;
 }
 
-export function formatArguments(binary: string, args: string[]): string {
-  return [binary, ...args].map(wrapArgument).join(' ');
-}
-
-export function wrapArgument(arg: string): string {
-  if (arg.includes(' ')) return `"${arg.replace(/"/g, '\\"')}"`;
-  return arg;
-}
-
 export function countLines(content?: string): number {
   if (!content) return 0;
   return content.split(/\r?\n/).length;
