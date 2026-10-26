@@ -1,8 +1,8 @@
 // Filesystem side of the `/memory` browser. Reads are fresh on every call, so
-// the overlay is never stale against the session snapshot. The only write is
-// `deleteTopic` (Ctrl+D in the list): it removes the memory file and its
-// MEMORY.md line, and nothing else — editing a memory is still the agent's or
-// the external editor's job.
+// the panel is never stale against the session snapshot. The only write is
+// `deleteTopic` (the panel's confirmed delete): it removes the memory file and
+// its MEMORY.md line, and nothing else — editing a memory is still the agent's
+// or the external editor's job, and the index itself is never deletable.
 import { readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { MEMORY_INDEX_NAME } from "./paths.js";
@@ -88,6 +88,12 @@ export type MemoryMutationResult = { ok: true } | { ok: false; error: string };
  * rename, so a crash mid-write leaves the old MEMORY.md intact.
  */
 export function deleteTopic(memoryDir: string, topic: MemoryTopic): MemoryMutationResult {
+	// The index lists memories; deleting the index itself is never a memory
+	// edit, and a stray `- [Index](MEMORY.md)` line must not take the whole
+	// project's index with it.
+	if (topic.file === MEMORY_INDEX_NAME) {
+		return { ok: false, error: "refusing to delete the memory index" };
+	}
 	const target = resolveInside(memoryDir, topic.file);
 	if (target === undefined) return { ok: false, error: "unsafe path in MEMORY.md" };
 	try {
@@ -142,17 +148,4 @@ function writeFileAtomic(path: string, text: string): void {
 
 function describeError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
-}
-
-/** UTF-8 size of a memory file, for the detail header. */
-export function byteLength(text: string): number {
-	return Buffer.byteLength(text, "utf8");
-}
-
-/** `623 B` / `1.2 KB` / `3.4 MB` — for the detail header. */
-export function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const kb = bytes / 1024;
-	if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
-	return `${(kb / 1024).toFixed(1)} MB`;
 }

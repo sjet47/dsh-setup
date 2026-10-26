@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "title": "Project Memory",
+    "description": "Project memory shared with pi, a per-session scratchpad, and a memory browser."
+  },
+  "action": {
+    "label": "Memory",
+    "title": "Project memory shared with pi"
+  },
+  "dialog": {
+    "title": "Memory",
+    "subtitle": "{label} · {count} topics · shared with pi",
+    "search": "Search title, file or hook",
+    "disabled": "dsh-note is disabled in this profile.",
+    "empty": "No memories for this project yet.",
+    "emptyHint": "Ask the agent to remember something, and it appears here.",
+    "noMatch": "No memories match.",
+    "select": "Select a memory to read it.",
+    "loading": "Loading…",
+    "close": "Close",
+    "refresh": "Refresh",
+    "copyPath": "Copy path",
+    "copied": "Copied",
+    "delete": "Delete",
+    "deleteConfirm": "Delete “{title}”?",
+    "deleteHint": "Removes the file and its MEMORY.md line.",
+    "cancel": "Cancel",
+    "missing": "missing",
+    "unindexed": "{file} (unindexed)",
+    "openFailed": "Cannot open {file}",
+    "deleteFailed": "Delete failed ({status})",
+    "listFailed": "Cannot load memories ({status})",
+    "bodyFailed": "Cannot read {file}",
+    "ageMinutes": "{count}m",
+    "ageHours": "{count}h",
+    "ageDays": "{count}d",
+    "ageMonths": "{count}mo"
+  }
+}

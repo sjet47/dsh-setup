@@ -1,18 +1,94 @@
 /**
  * Browser half of dsh-note: a header action that opens the project's memory
- * browser. Reads through the authenticated `/api/dsh-note/*` routes; deleting a
- * memory removes the file and its MEMORY.md line in one Host-side step.
+ * browser, and the browser itself rendered in the frame-wide overlay slot.
+ *
+ * The panel lives in `shell.overlay` (root scope) rather than a portal into
+ * `document.body`: the frame owns the floating layer, its stacking order, and
+ * the click-through behavior, so the panel cannot cover host dialogs or be
+ * clipped by the composer. The `useSessions` standard prop identifies the
+ * Session currently shown in the center column, so a panel left open closes
+ * when the user switches Sessions.
+ *
+ * Reading and deleting go through authenticated `/api/dsh-note/*` routes;
+ * deleting a memory removes the file and its MEMORY.md line in one Host step.
  */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { createPortal } from 'react-dom'
-import type { CSSProperties, ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import type { CSSProperties, MutableRefObject, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
+import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
+import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-commands/client'
 
-export const inject = ['slots'] as const
+export const inject = ['slots', 'locale'] as const
+
+const NS = 'dsh-note'
+
+/** Copy registered into the Client locale service (see `locale/*.json`). */
+const EN: Record<string, string> = {
+  'action.label': 'Memory',
+  'action.title': 'Project memory shared with pi',
+  'dialog.title': 'Memory',
+  'dialog.subtitle': '{label} · {count} topics · shared with pi',
+  'dialog.search': 'Search title, file or hook',
+  'dialog.disabled': 'dsh-note is disabled in this profile.',
+  'dialog.empty': 'No memories for this project yet.',
+  'dialog.emptyHint': 'Ask the agent to remember something, and it appears here.',
+  'dialog.noMatch': 'No memories match.',
+  'dialog.select': 'Select a memory to read it.',
+  'dialog.loading': 'Loading…',
+  'dialog.close': 'Close',
+  'dialog.refresh': 'Refresh',
+  'dialog.copyPath': 'Copy path',
+  'dialog.copied': 'Copied',
+  'dialog.delete': 'Delete',
+  'dialog.deleteConfirm': 'Delete “{title}”?',
+  'dialog.deleteHint': 'Removes the file and its MEMORY.md line.',
+  'dialog.cancel': 'Cancel',
+  'dialog.missing': 'missing',
+  'dialog.unindexed': '{file} (unindexed)',
+  'dialog.openFailed': 'Cannot open {file}',
+  'dialog.deleteFailed': 'Delete failed ({status})',
+  'dialog.listFailed': 'Cannot load memories ({status})',
+  'dialog.bodyFailed': 'Cannot read {file}',
+  'dialog.ageMinutes': '{count}m',
+  'dialog.ageHours': '{count}h',
+  'dialog.ageDays': '{count}d',
+  'dialog.ageMonths': '{count}mo',
+}
+const ZH: Record<string, string> = {
+  'action.label': '记忆',
+  'action.title': '与 pi 共享的项目记忆',
+  'dialog.title': '记忆',
+  'dialog.subtitle': '{label} · {count} 条 · 与 pi 共享',
+  'dialog.search': '搜索标题、文件或记忆钩子',
+  'dialog.disabled': 'dsh-note 在当前 profile 中被禁用。',
+  'dialog.empty': '这个项目还没有记忆。',
+  'dialog.emptyHint': '让 agent 记住一件事，它就会出现在这里。',
+  'dialog.noMatch': '没有匹配的记忆。',
+  'dialog.select': '选择一条记忆来阅读。',
+  'dialog.loading': '加载中…',
+  'dialog.close': '关闭',
+  'dialog.refresh': '刷新',
+  'dialog.copyPath': '复制路径',
+  'dialog.copied': '已复制',
+  'dialog.delete': '删除',
+  'dialog.deleteConfirm': '删除「{title}」？',
+  'dialog.deleteHint': '会同时删除文件和 MEMORY.md 里的索引行。',
+  'dialog.cancel': '取消',
+  'dialog.missing': '文件缺失',
+  'dialog.unindexed': '{file}（未索引）',
+  'dialog.openFailed': '无法打开 {file}',
+  'dialog.deleteFailed': '删除失败（{status}）',
+  'dialog.listFailed': '无法加载记忆（{status}）',
+  'dialog.bodyFailed': '无法读取 {file}',
+  'dialog.ageMinutes': '{count} 分',
+  'dialog.ageHours': '{count} 小时',
+  'dialog.ageDays': '{count} 天',
+  'dialog.ageMonths': '{count} 个月',
+}
 
 interface Topic {
   title: string
@@ -25,8 +101,10 @@ interface Topic {
 }
 
 interface ListPayload {
+  enabled?: boolean
   label: string
   memoryDir: string
+  scratchDir?: string
   topics: Topic[]
 }
 
@@ -36,6 +114,113 @@ interface BodyPayload {
   path: string
 }
 
+/* ── open-panel store ─────────────────────────────────────────────────────── */
+
+interface NoteStoreState {
+  /** Session whose browser is open, if any. */
+  open: string | undefined
+  /** Bumped after a mutation so the header count refetches. */
+  revision: number
+}
+
+let noteState: NoteStoreState = { open: undefined, revision: 0 }
+const noteListeners = new Set<() => void>()
+
+function setNoteState(patch: Partial<NoteStoreState>): void {
+  noteState = { ...noteState, ...patch }
+  for (const listener of noteListeners) listener()
+}
+
+function subscribeNote(listener: () => void): () => void {
+  noteListeners.add(listener)
+  return () => noteListeners.delete(listener)
+}
+
+function useNoteStore(): NoteStoreState {
+  return useSyncExternalStore(
+    subscribeNote,
+    () => noteState,
+    () => noteState,
+  )
+}
+
+/* ── locale ───────────────────────────────────────────────────────────────── */
+
+/** Translate through the plugin's namespace and re-render on locale changes. */
+function useT(locale: LocaleRuntime): Translate {
+  useSyncExternalStore(
+    useCallback((listener: () => void) => locale.subscribe(listener), [locale]),
+    useCallback(() => locale.getSnapshot().revision, [locale]),
+    () => 0,
+  )
+  return locale.bind(NS)
+}
+
+/* ── theme tokens ─────────────────────────────────────────────────────────── */
+
+const SURFACE = 'var(--dsw-alias-bg-layer-2, #ffffff)'
+const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
+const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
+const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
+const SECONDARY = 'var(--dsw-alias-label-secondary, #555)'
+const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
+const ERROR = 'var(--dsw-alias-state-error-primary, #e03131)'
+const FONT = 'var(--dsh-content-font-size, 14px)'
+/** One step of the content font size, so the panel follows the theme setting. */
+const scale = (factor: number): string => `calc(${FONT} * ${factor})`
+
+const overlayStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 1000,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  pointerEvents: 'auto',
+}
+const maskStyle: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  background: 'var(--dsw-alias-bg-mask-1, rgba(0,0,0,0.24))',
+  backdropFilter: 'var(--dsw-mask-blur, blur(2px))',
+}
+const panelStyle: CSSProperties = {
+  position: 'relative',
+  display: 'flex',
+  flexDirection: 'column',
+  width: 'min(880px, calc(100vw - 48px))',
+  height: 'min(640px, calc(100vh - 96px))',
+  background: SURFACE,
+  color: TEXT,
+  border: `0.5px solid ${BORDER}`,
+  borderRadius: 'var(--dsw-radius-panel, 12px)',
+  boxShadow: 'var(--dsw-elevation-prominent, 0 12px 40px rgba(0,0,0,.28))',
+  overflow: 'hidden',
+  fontSize: FONT,
+}
+const buttonStyle: CSSProperties = {
+  border: `0.5px solid ${BORDER}`,
+  borderRadius: 'var(--dsw-radius-sm, 6px)',
+  background: 'transparent',
+  color: MUTED,
+  cursor: 'pointer',
+  font: 'inherit',
+  fontSize: scale(0.9),
+  padding: '2px 8px',
+}
+const quietButtonStyle: CSSProperties = {
+  border: 0,
+  borderRadius: 'var(--dsw-radius-xs, 4px)',
+  background: 'transparent',
+  color: MUTED,
+  cursor: 'pointer',
+  font: 'inherit',
+  fontSize: scale(0.9),
+  padding: '2px 6px',
+}
+
+/* ── helpers ──────────────────────────────────────────────────────────────── */
+
 function formatBytes(bytes: number | undefined): string {
   if (bytes === undefined) return ''
   if (bytes < 1024) return `${bytes} B`
@@ -43,267 +228,346 @@ function formatBytes(bytes: number | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function formatAge(mtimeMs: number | undefined): string {
+function formatAge(t: Translate, mtimeMs: number | undefined): string {
   if (mtimeMs === undefined) return ''
   const minutes = Math.max(0, Math.round((Date.now() - mtimeMs) / 60_000))
-  if (minutes < 60) return `${minutes}m`
+  if (minutes < 60) return t('dialog.ageMinutes', { count: minutes })
   const hours = Math.round(minutes / 60)
-  if (hours < 48) return `${hours}h`
+  if (hours < 48) return t('dialog.ageHours', { count: hours })
   const days = Math.round(hours / 24)
-  if (days < 60) return `${days}d`
-  const months = Math.round(days / 30)
-  return `${months}mo`
+  if (days < 60) return t('dialog.ageDays', { count: days })
+  return t('dialog.ageMonths', { count: Math.round(days / 30) })
 }
 
-/**
- * Which sessions have the memory browser open. A plain external store keeps
- * the header button, the `/memory` command action, and the panel itself in
- * sync without threading React context through the slot framework.
- */
-const openSessions = new Set<string>()
-const openListeners = new Set<() => void>()
-
-function setMemoryOpen(sessionId: string, open: boolean): void {
-  if (open) openSessions.add(sessionId)
-  else openSessions.delete(sessionId)
-  for (const listener of openListeners) listener()
+async function readError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: unknown }
+    return typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`
+  } catch {
+    return `HTTP ${response.status}`
+  }
 }
 
-function subscribeMemoryOpen(listener: () => void): () => void {
-  openListeners.add(listener)
-  return () => openListeners.delete(listener)
-}
-
-function useMemoryOpen(sessionId: string): boolean {
+function useNarrow(): boolean {
   return useSyncExternalStore(
-    subscribeMemoryOpen,
-    () => openSessions.has(sessionId),
+    useCallback((listener: () => void) => {
+      const query = window.matchMedia('(max-width: 640px)')
+      query.addEventListener('change', listener)
+      return () => query.removeEventListener('change', listener)
+    }, []),
+    useCallback(() => window.matchMedia('(max-width: 640px)').matches, []),
     () => false,
   )
 }
 
-const SURFACE = 'var(--dsw-alias-bg-layer-2, #ffffff)'
-const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
-const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
-const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
-const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
-const FONT = 'var(--dsh-content-font-size, 14px)'
-/** One step of the content font size, so the panel follows the theme setting. */
-const scale = (factor: number): string => `calc(${FONT} * ${factor})`
+/**
+ * Modal keyboard contract: focus moves into the panel, Tab stays inside it,
+ * Escape closes it, and focus returns to whatever opened it.
+ */
+function useDialogBehavior(panelRef: MutableRefObject<HTMLDivElement | null>, onClose: () => void): void {
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+    const panel = panelRef.current
+    const focusables = (): HTMLElement[] => {
+      if (panel === null) return []
+      return Array.from(
+        panel.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.offsetParent !== null)
+    }
+    const initial = panel?.querySelector<HTMLElement>('[data-autofocus]') ?? focusables()[0] ?? panel
+    initial?.focus()
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeRef.current()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const items = focusables()
+      if (items.length === 0) {
+        event.preventDefault()
+        panel?.focus()
+        return
+      }
+      const first = items[0]!
+      const last = items[items.length - 1]!
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      previous?.focus?.()
+    }
+  }, [panelRef])
+}
 
-const modalStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  zIndex: 2000,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: 'rgba(0,0,0,0.5)',
-}
-const panelStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  width: 'min(820px, 94vw)',
-  // Fixed height: the frame must not resize when a memory is opened, deleted,
-  // or while the body is loading.
-  height: 'min(600px, 84vh)',
-  background: SURFACE,
-  color: TEXT,
-  border: `0.5px solid ${BORDER}`,
-  borderRadius: 12,
-  boxShadow: 'var(--dsw-elevation-prominent, 0 12px 40px rgba(0,0,0,.28))',
-  overflow: 'hidden',
-  fontSize: FONT,
-}
-const buttonStyle: CSSProperties = {
-  border: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
-  borderRadius: 6,
-  background: 'transparent',
-  color: MUTED,
-  cursor: 'pointer',
-  fontSize: scale(0.92),
-  padding: '2px 8px',
-}
+/* ── the browser ──────────────────────────────────────────────────────────── */
 
-function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () => void }): ReactNode {
+function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): ReactNode {
   const [list, setList] = useState<ListPayload | undefined>(undefined)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Topic | undefined>(undefined)
   const [body, setBody] = useState<BodyPayload | undefined>(undefined)
-  const [armed, setArmed] = useState<string | undefined>(undefined)
+  const [armed, setArmed] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
+  const [bodyError, setBodyError] = useState<string | undefined>(undefined)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const openSeq = useRef(0)
+  const narrow = useNarrow()
+  const close = useCallback(() => setNoteState({ open: undefined }), [])
+  // Escape closes the confirm step first, then the panel.
+  const requestClose = useCallback(() => {
+    if (armed) {
+      setArmed(false)
+      return
+    }
+    close()
+  }, [armed, close])
+  useDialogBehavior(panelRef, requestClose)
 
   const reload = useCallback(async (): Promise<void> => {
     try {
       const response = await fetch(`/api/dsh-note/list?session=${encodeURIComponent(sessionId)}`, {
         credentials: 'same-origin',
       })
-      if (!response.ok) throw new Error(`list failed (${response.status})`)
+      if (!response.ok) throw new Error(t('dialog.listFailed', { status: response.status }))
       setList((await response.json()) as ListPayload)
       setError(undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
-  }, [sessionId])
+  }, [sessionId, t])
 
   useEffect(() => {
     void reload()
   }, [reload])
 
+  // The confirm step replaces the header actions; focus must follow it so the
+  // destructive button is never the default target of a stray Enter.
+  useEffect(() => {
+    if (armed) cancelRef.current?.focus()
+  }, [armed])
+
   const openTopic = useCallback(
     async (topic: Topic): Promise<void> => {
+      const seq = ++openSeq.current
       setSelected(topic)
       setBody(undefined)
-      setArmed(undefined)
+      setArmed(false)
+      setBodyError(undefined)
+      setCopied(false)
       try {
         const response = await fetch(
           `/api/dsh-note/body?session=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(topic.file)}`,
           { credentials: 'same-origin' },
         )
-        if (!response.ok) throw new Error(`cannot open ${topic.file}`)
-        setBody((await response.json()) as BodyPayload)
-        setError(undefined)
+        if (!response.ok) throw new Error(await readError(response))
+        const payload = (await response.json()) as BodyPayload
+        // A slower earlier request must not overwrite a newer selection.
+        if (seq === openSeq.current) setBody(payload)
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        if (seq === openSeq.current) {
+          setBodyError(cause instanceof Error ? cause.message : t('dialog.bodyFailed', { file: topic.file }))
+        }
       }
     },
-    [sessionId],
+    [sessionId, t],
   )
 
-  const remove = useCallback(
-    async (topic: Topic): Promise<void> => {
-      if (armed !== topic.file) {
-        setArmed(topic.file)
-        return
-      }
-      try {
-        const response = await fetch(`/api/dsh-note/delete?session=${encodeURIComponent(sessionId)}`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ file: topic.file }),
-        })
-        if (!response.ok) throw new Error(`delete failed (${response.status})`)
-        setSelected(undefined)
-        setBody(undefined)
-        setArmed(undefined)
-        await reload()
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
-      }
-    },
-    [armed, reload, sessionId],
-  )
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') onClose()
+  const remove = useCallback(async (): Promise<void> => {
+    if (selected === undefined || deleting) return
+    setDeleting(true)
+    try {
+      const response = await fetch(`/api/dsh-note/delete?session=${encodeURIComponent(sessionId)}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ file: selected.file }),
+      })
+      if (!response.ok) throw new Error(t('dialog.deleteFailed', { status: response.status }))
+      setSelected(undefined)
+      setBody(undefined)
+      setArmed(false)
+      setError(undefined)
+      await reload()
+      // The header count reads the same list; tell it to refetch.
+      setNoteState({ revision: noteState.revision + 1 })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setDeleting(false)
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [deleting, reload, selected, sessionId, t])
+
+  const copyPath = useCallback(async (): Promise<void> => {
+    const value = body?.path ?? selected?.file
+    if (value === undefined) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard access can be denied; the path stays selectable in the UI.
+    }
+  }, [body?.path, selected?.file])
 
   const topics = useMemo(() => {
     const all = list?.topics ?? []
-    if (query.trim() === '') return all
     const needle = query.trim().toLowerCase()
-    return all.filter((topic) =>
-      `${topic.title} ${topic.file} ${topic.hook}`.toLowerCase().includes(needle),
-    )
+    if (needle === '') return all
+    return all.filter((topic) => `${topic.title} ${topic.file} ${topic.hook}`.toLowerCase().includes(needle))
   }, [list, query])
 
-  return createPortal(
-    <div style={modalStyle} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div style={panelStyle} role="dialog" aria-label="Project memory">
+  const focusRing = '0 0 0 2px var(--dsw-alias-brand-primary, #4d6bfe)'
+  const listPaneStyle: CSSProperties = {
+    width: narrow ? '100%' : 'clamp(220px, 32%, 320px)',
+    flex: 'none',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 0,
+    maxHeight: narrow ? '45%' : undefined,
+    borderRight: narrow ? undefined : `0.5px solid ${BORDER}`,
+    borderBottom: narrow ? `0.5px solid ${BORDER}` : undefined,
+  }
+
+  return (
+    <div
+      style={overlayStyle}
+      role="presentation"
+      onMouseDown={(event) => event.target === event.currentTarget && close()}
+    >
+      <div style={maskStyle} aria-hidden="true" onMouseDown={close} />
+      <div ref={panelRef} style={panelStyle} role="dialog" aria-modal="true" aria-labelledby="dsh-note-title" tabIndex={-1}>
         <div
           style={{
             display: 'flex',
             alignItems: 'baseline',
             gap: 8,
             padding: '10px 14px',
-            borderBottom: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
+            borderBottom: `0.5px solid ${BORDER}`,
           }}
         >
-          <strong style={{ fontSize: scale(1.08) }}>Memory</strong>
-          <span style={{ color: MUTED, fontSize: scale(0.92) }}>
-            {list?.label ?? ''} · {(list?.topics ?? []).length} topics · shared with pi
+          <strong id="dsh-note-title" style={{ fontSize: scale(1.08) }}>
+            {t('dialog.title')}
+          </strong>
+          <span style={{ color: MUTED, fontSize: scale(0.9), overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {list === undefined
+              ? ''
+              : list.enabled === false
+                ? t('action.title')
+                : t('dialog.subtitle', { label: list.label, count: list.topics.length })}
           </span>
           <span style={{ flex: 1 }} />
-          <button type="button" style={buttonStyle} onClick={onClose}>
-            Close
+          <button type="button" style={quietButtonStyle} onClick={() => void reload()} title={t('dialog.refresh')}>
+            ↻
+          </button>
+          <button type="button" style={buttonStyle} onClick={close}>
+            {t('dialog.close')}
           </button>
         </div>
 
-        <div style={{ display: 'flex', minHeight: 0, flex: 1 }}>
-          <div
-            style={{
-              width: 320,
-              flex: 'none',
-              display: 'flex',
-              flexDirection: 'column',
-              borderRight: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
-              minHeight: 0,
-            }}
-          >
+        <div style={{ display: 'flex', flexDirection: narrow ? 'column' : 'row', minHeight: 0, flex: 1 }}>
+          <div style={listPaneStyle}>
             <input
+              data-autofocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search title, file or hook"
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && topics.length > 0) void openTopic(topics[0]!)
+              }}
+              placeholder={t('dialog.search')}
+              aria-label={t('dialog.search')}
               style={{
                 margin: 8,
-                padding: '4px 8px',
-                borderRadius: 6,
-                border: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
+                padding: '5px 8px',
+                borderRadius: 'var(--dsw-radius-sm, 6px)',
+                border: `0.5px solid ${BORDER}`,
                 background: 'transparent',
                 color: 'inherit',
+                font: 'inherit',
                 fontSize: scale(0.92),
                 outline: 'none',
               }}
+              onFocus={(event) => {
+                event.currentTarget.style.boxShadow = focusRing
+              }}
+              onBlur={(event) => {
+                event.currentTarget.style.boxShadow = 'none'
+              }}
             />
             <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-              {topics.map((topic) => (
-                <button
-                  key={topic.file}
-                  type="button"
-                  onClick={() => void openTopic(topic)}
-                  style={{
-                    display: 'block',
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '6px 10px',
-                    border: 0,
-                    borderLeft:
-                      selected?.file === topic.file ? '2px solid var(--dsw-alias-label-primary, #222)' : '2px solid transparent',
-                    background: selected?.file === topic.file ? FILL : 'transparent',
-                    color: 'inherit',
-                    cursor: 'pointer',
-                    fontSize: scale(1),
-                  }}
-                >
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {topic.title}
-                    </span>
-                    <span style={{ color: MUTED, fontSize: scale(0.78), flex: 'none' }}>
-                      {topic.exists ? `${formatBytes(topic.size)} · ${formatAge(topic.mtimeMs)}` : 'missing'}
-                    </span>
-                  </div>
-                  <div
+              {topics.map((topic) => {
+                const active = selected?.file === topic.file
+                return (
+                  <button
+                    key={topic.file}
+                    type="button"
+                    onClick={() => void openTopic(topic)}
+                    aria-current={active ? 'true' : undefined}
                     style={{
-                      color: MUTED,
-                      fontSize: scale(0.86),
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '6px 10px',
+                      border: 0,
+                      borderLeft: active
+                        ? '2px solid var(--dsw-alias-label-primary, #222)'
+                        : '2px solid transparent',
+                      background: active ? FILL : 'transparent',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      font: 'inherit',
+                      fontSize: scale(1),
                     }}
                   >
-                    {topic.indexed ? topic.hook || topic.file : `${topic.file} (unindexed)`}
-                  </div>
-                </button>
-              ))}
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {topic.title}
+                      </span>
+                      <span style={{ color: MUTED, fontSize: scale(0.78), flex: 'none' }}>
+                        {topic.exists ? `${formatBytes(topic.size)} · ${formatAge(t, topic.mtimeMs)}` : t('dialog.missing')}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        color: MUTED,
+                        fontSize: scale(0.86),
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {topic.indexed ? topic.hook || topic.file : t('dialog.unindexed', { file: topic.file })}
+                    </div>
+                  </button>
+                )
+              })}
               {topics.length === 0 ? (
-                <div style={{ padding: 12, color: MUTED, fontSize: scale(0.92) }}>
-                  No memories match.
+                <div style={{ padding: '12px 14px', color: MUTED, fontSize: scale(0.9), lineHeight: 1.6 }}>
+                  {list?.enabled === false ? (
+                    <div>{t('dialog.disabled')}</div>
+                  ) : (
+                    <>
+                      <div>{(list?.topics ?? []).length === 0 ? t('dialog.empty') : t('dialog.noMatch')}</div>
+                      {(list?.topics ?? []).length === 0 ? (
+                        <div style={{ marginTop: 4, color: SECONDARY }}>{t('dialog.emptyHint')}</div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -311,31 +575,25 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
 
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {selected === undefined ? (
-              <div style={{ padding: 16, color: MUTED, fontSize: scale(0.92) }}>
-                Select a memory to read it.
-              </div>
+              <div style={{ padding: 16, color: MUTED, fontSize: scale(0.92) }}>{t('dialog.select')}</div>
             ) : (
               <>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px' }}>
                   <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {selected.title}
                   </span>
-                  <button
-                    type="button"
-                    style={{
-                      ...buttonStyle,
-                      color: armed === selected.file ? 'var(--dsw-alias-state-error-primary, #e03131)' : undefined,
-                    }}
-                    onClick={() => void remove(selected)}
-                  >
-                    {armed === selected.file ? 'Confirm delete' : 'Delete'}
+                  <button type="button" style={quietButtonStyle} onClick={() => void copyPath()} title={t('dialog.copyPath')}>
+                    {copied ? t('dialog.copied') : t('dialog.copyPath')}
+                  </button>
+                  <button type="button" style={quietButtonStyle} onClick={() => setArmed(true)}>
+                    {t('dialog.delete')}
                   </button>
                 </div>
                 <div
                   style={{
-                    padding: '0 12px',
+                    padding: '0 12px 4px',
                     color: MUTED,
-                    fontSize: scale(0.86),
+                    fontSize: scale(0.84),
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
                     whiteSpace: 'nowrap',
@@ -344,22 +602,60 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
                 >
                   {body?.path ?? selected.file}
                 </div>
+
+                {armed ? (
+                  <div
+                    role="group"
+                    aria-label={t('dialog.deleteConfirm', { title: selected.title })}
+                    style={{
+                      margin: '4px 12px 8px',
+                      padding: '8px 10px',
+                      border: `0.5px solid ${BORDER}`,
+                      borderRadius: 'var(--dsw-radius-sm, 6px)',
+                      background: FILL,
+                      fontSize: scale(0.9),
+                    }}
+                  >
+                    <div style={{ marginBottom: 2 }}>{t('dialog.deleteConfirm', { title: selected.title })}</div>
+                    <div style={{ color: MUTED, marginBottom: 8 }}>{t('dialog.deleteHint')}</div>
+                    <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                      <button
+                        ref={cancelRef}
+                        type="button"
+                        style={buttonStyle}
+                        onClick={() => setArmed(false)}
+                        disabled={deleting}
+                      >
+                        {t('dialog.cancel')}
+                      </button>
+                      <button
+                        type="button"
+                        style={{ ...buttonStyle, color: ERROR }}
+                        onClick={() => void remove()}
+                        disabled={deleting}
+                      >
+                        {t('dialog.delete')}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
                 <pre
                   style={{
                     flex: 1,
                     overflow: 'auto',
-                    margin: '8px 12px 12px',
+                    margin: '4px 12px 12px',
                     padding: 10,
-                    borderRadius: 8,
+                    borderRadius: 'var(--dsw-radius-md, 8px)',
                     background: FILL,
-                    fontFamily: 'inherit',
+                    fontFamily: 'var(--dsh-font-family-text, inherit)',
                     fontSize: scale(0.92),
-                    lineHeight: 1.5,
+                    lineHeight: 1.6,
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
                   }}
                 >
-                  {body?.text ?? 'Loading…'}
+                  {bodyError ?? body?.text ?? t('dialog.loading')}
                 </pre>
               </>
             )}
@@ -367,19 +663,22 @@ function MemoryBrowser({ sessionId, onClose }: { sessionId: string; onClose: () 
         </div>
 
         {error !== undefined ? (
-          <div style={{ padding: '6px 12px', color: 'var(--dsw-alias-state-error-primary, #e03131)', fontSize: scale(0.86) }}>
+          <div style={{ padding: '6px 14px', color: ERROR, fontSize: scale(0.86), borderTop: `0.5px solid ${BORDER}` }}>
             {error}
           </div>
         ) : null}
       </div>
-    </div>,
-    document.body,
+    </div>
   )
 }
 
-function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
-  const open = useMemoryOpen(sessionId)
+/* ── header action ────────────────────────────────────────────────────────── */
+
+function MemoryAction({ sessionId, locale }: { sessionId: string; locale: LocaleRuntime }): ReactNode {
+  const t = useT(locale)
+  const { open, revision } = useNoteStore()
   const [count, setCount] = useState<number | undefined>(undefined)
+  const [enabled, setEnabled] = useState(true)
 
   useEffect(() => {
     let live = true
@@ -390,7 +689,9 @@ function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
         })
         if (!response.ok) return
         const payload = (await response.json()) as ListPayload
-        if (live) setCount(payload.topics.length)
+        if (!live) return
+        setEnabled(payload.enabled !== false)
+        setCount(payload.topics.length)
       } catch {
         // Leave the count unknown; the button still opens the browser.
       }
@@ -398,72 +699,116 @@ function MemoryAction({ sessionId }: { sessionId: string }): ReactNode {
     return () => {
       live = false
     }
-  }, [sessionId, open])
+  }, [sessionId, revision])
 
+  if (!enabled) return null
+  const isOpen = open === sessionId
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => setMemoryOpen(sessionId, true)}
-        title="Project memory shared with pi"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 4,
-          minHeight: 24,
-          padding: '0 6px',
-          border: '0.5px solid var(--dsw-alias-border-l1, #ddd)',
-          borderRadius: 'var(--dsw-radius-sm, 6px)',
-          background: 'transparent',
-          color: MUTED,
-          cursor: 'pointer',
-          fontSize: 12,
-          lineHeight: '18px',
-        }}
-      >
-        Memory{count === undefined ? '' : ` · ${count}`}
-      </button>
-      {open ? <MemoryPanel sessionId={sessionId} /> : null}
-    </>
+    <button
+      type="button"
+      onClick={() => setNoteState({ open: sessionId })}
+      title={t('action.title')}
+      aria-label={t('action.title')}
+      aria-haspopup="dialog"
+      aria-expanded={isOpen}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        minHeight: 24,
+        padding: '0 6px',
+        border: `0.5px solid ${BORDER}`,
+        borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: isOpen ? FILL : 'transparent',
+        color: MUTED,
+        cursor: 'pointer',
+        font: 'inherit',
+        fontSize: 'var(--dsh-content-font-size-secondary, 12px)',
+        lineHeight: '18px',
+      }}
+    >
+      {t('action.label')}
+      {count === undefined ? '' : ` · ${count}`}
+    </button>
   )
 }
 
-/** The modal itself, mounted from the composer overlay so `/memory` works even
- *  when the header action area is collapsed. */
-function MemoryPanel({ sessionId }: { sessionId: string }): ReactNode {
-  const open = useMemoryOpen(sessionId)
-  if (!open) return null
-  return <MemoryBrowser sessionId={sessionId} onClose={() => setMemoryOpen(sessionId, false)} />
+/* ── frame overlay ────────────────────────────────────────────────────────── */
+
+interface SessionSummaryLike {
+  retainedBy?: Record<string, number>
 }
+
+interface SessionsSnapshotLike {
+  byId: Record<string, SessionSummaryLike>
+}
+
+type UseSessionsLike = <T>(selector: (state: SessionsSnapshotLike) => T) => T
+
+function MemoryOverlay({ useSessions, locale }: { useSessions: UseSessionsLike; locale: LocaleRuntime }): ReactNode {
+  const t = useT(locale)
+  const { open } = useNoteStore()
+  const current = useSessions((state) => {
+    for (const session of Object.values(state.byId)) {
+      if ((session.retainedBy?.mainView ?? 0) > 0) return (session as SessionSummaryLike & { id: string }).id
+    }
+    return undefined
+  })
+
+  // Switching Sessions closes the panel: its memory belongs to the old cwd.
+  useEffect(() => {
+    if (open !== undefined && open !== current) setNoteState({ open: undefined })
+  }, [current, open])
+
+  if (open === undefined || open !== current) return null
+  return <MemoryBrowser key={open} sessionId={open} t={t} />
+}
+
+/* ── registration ─────────────────────────────────────────────────────────── */
 
 /** Action target for the client-side `/memory` decoration. */
 function runMemoryCommand(session: { sessionId: string }): void {
-  setMemoryOpen(String(session.sessionId), true)
+  setNoteState({ open: String(session.sessionId) })
 }
 
-/** Register the header button, the panel, and the `/memory` client action. */
+/** Register the header button, the overlay panel, and the `/memory` action. */
 export function apply(ctx: Context): void {
-  ctx.slots.inject('conversation.session.header.actions', () =>
-    ctx.slots.register(
+  ctx.effect(() => {
+    const disposeEn = ctx.locale.register(NS, 'en', EN)
+    const disposeZh = ctx.locale.register(NS, 'zh', ZH)
+    return () => {
+      disposeEn()
+      disposeZh()
+    }
+  })
+
+  ctx.slots.inject('conversation.session.header.actions', () => {
+    const Action = (props: { sessionId: string }) => <MemoryAction sessionId={props.sessionId} locale={ctx.locale} />
+    return ctx.slots.register(
       {
         name: 'conversation.session.header.actions',
         id: 'dsh-note',
-        order: 20,
+        order: 25,
+        label: 'Memory',
       },
-      MemoryAction,
-    ),
-  )
+      Action,
+    )
+  })
 
-  ctx.slots.inject('conversation.input.overlay', () =>
-    ctx.slots.register(
+  ctx.slots.inject('shell.overlay', () => {
+    const Overlay = (props: { useSessions: UseSessionsLike }) => (
+      <MemoryOverlay useSessions={props.useSessions} locale={ctx.locale} />
+    )
+    return ctx.slots.register(
       {
-        name: 'conversation.input.overlay',
+        name: 'shell.overlay',
         id: 'dsh-note-panel',
         order: 20,
+        label: 'Memory',
       },
-      MemoryPanel,
-    ),
-  )
+      Overlay,
+    )
+  })
 
   // Wait for the command surface: a composition without it keeps the button
   // and the panel, just no `/memory` decoration.

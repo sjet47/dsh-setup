@@ -153,10 +153,3 @@ export function buildTopics(indexText: string, files?: MemoryFileInfo[]): Memory
 		}));
 	return [...indexed, ...orphans];
 }
-
-/** Text a topic is searched by (title, file name and hook). */
-export function topicMatchText(topic: MemoryTopic): string {
-	return topic.indexed
-		? `${topic.title} ${topic.file} ${topic.hook}`
-		: topic.file;
-}

@@ -10,17 +10,22 @@
 /** Header of the injected snapshot section. */
 export const MEMORY_INDEX_HEADER = '## Memory index'
 
+/** Suffix appended to a snapshot that had to be cut for the prompt budget. */
+export const SNAPSHOT_TRUNCATED = '(snapshot truncated; read MEMORY.md for the rest)'
+
 /**
  * Build the byte-exact block appended to the system prompt for one session.
  * @param memoryDir - absolute project memory directory.
  * @param scratchDir - absolute session scratchpad directory.
  * @param snapshot - `MEMORY.md` content read at agent creation.
+ * @param maxChars - longest snapshot accepted; the rest is replaced by a note.
  * @returns the block, always starting with a blank separator line.
  */
-export function buildPromptAppend(memoryDir: string, scratchDir: string, snapshot: string): string {
+export function buildPromptAppend(memoryDir: string, scratchDir: string, snapshot: string, maxChars = Number.POSITIVE_INFINITY): string {
   const rules = RULES_TEXT.split('<MEMORY_DIR>').join(memoryDir).split('<SCRATCH_DIR>').join(scratchDir)
   if (snapshot === '') return '\n\n' + rules
-  return '\n\n' + rules + '\n\n' + MEMORY_INDEX_HEADER + '\n\n' + snapshot
+  const bounded = snapshot.length > maxChars ? `${snapshot.slice(0, Math.max(0, maxChars))}\n\n${SNAPSHOT_TRUNCATED}\n` : snapshot
+  return '\n\n' + rules + '\n\n' + MEMORY_INDEX_HEADER + '\n\n' + bounded
 }
 
 /**

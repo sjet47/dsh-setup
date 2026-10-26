@@ -11,9 +11,6 @@ import { join, resolve, sep } from "node:path";
 
 export const MEMORY_DIR_NAME = "pi-note";
 export const MEMORY_INDEX_NAME = "MEMORY.md";
-/** env var name injected at session_start and expanded in non-shell tools */
-export const SCRATCH_ENV_VAR = "PI_NOTE_SCRATCHPAD_DIR";
-
 /**
  * Encode a working directory as the slug pi uses for its session dir names
  * (mirror of session-manager's getDefaultSessionDirPath, which is not
@@ -67,29 +64,4 @@ export function scratchpadRoot(
 /** Session scratchpad dir: <root>/<session-id>. Session ids are global UUIDs. */
 export function scratchpadDirFor(sessionId: string, root?: string): string {
 	return join(root ?? scratchpadRoot(), sessionId);
-}
-
-export interface PiNotePaths {
-	/** project memory dir: <agentDir>/pi-note/<slug> */
-	memoryDir: string;
-	/** MEMORY.md index path inside memoryDir */
-	memoryIndex: string;
-	/** session scratchpad dir */
-	scratchDir: string;
-}
-
-/** One call that yields every path the session needs. `memoryRoot` is a working
- *  directory: the cwd, or the git root when the cwd is a linked worktree. */
-export function resolvePaths(
-	agentDir: string,
-	memoryRoot: string,
-	sessionId: string,
-	opts: { tmpDir?: string; uid?: number } = {},
-): PiNotePaths {
-	const memoryDir = memoryDirFor(agentDir, memoryRoot);
-	return {
-		memoryDir,
-		memoryIndex: join(memoryDir, MEMORY_INDEX_NAME),
-		scratchDir: scratchpadDirFor(sessionId, scratchpadRoot(opts.tmpDir, opts.uid)),
-	};
 }
