@@ -96,7 +96,62 @@ const actionStyle: CSSProperties = {
   lineHeight: 1.3,
 }
 
-/** One row under the composer: two-line recap, freshness, and actions. */
+const BRAND = 'var(--dsw-alias-brand-primary, #4d6bfe)'
+const ROW: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 8,
+  margin: '0 0 8px',
+  padding: '7px 10px',
+  border: `0.5px solid ${BORDER}`,
+  borderRadius: 10,
+  background: FILL,
+  fontSize: scale(0.86),
+  lineHeight: 1.5,
+  color: MUTED,
+}
+const LABEL: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  color: BRAND,
+  fontWeight: 600,
+  letterSpacing: '.02em',
+  lineHeight: 1.5,
+}
+const ROW_TEXT: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  border: 0,
+  padding: 0,
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary, #5c5c5c)',
+  cursor: 'pointer',
+  textAlign: 'left',
+  font: 'inherit',
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+}
+const ROW_ACTION: CSSProperties = {
+  border: 0,
+  background: 'transparent',
+  color: MUTED,
+  cursor: 'pointer',
+  fontSize: scale(0.86),
+  lineHeight: 1.3,
+  padding: '0 3px',
+}
+const STALE: CSSProperties = {
+  flex: 'none',
+  color: WARNING,
+  fontSize: scale(0.78),
+  lineHeight: 1.5,
+}
+
+/** Recap card directly above the composer: two clamped lines plus actions. */
 function RecapLine({ sessionId }: { sessionId: string }): ReactNode {
   const [state, setState] = useState<RecapWire | undefined>(undefined)
   const [busy, setBusy] = useState(false)
@@ -129,58 +184,43 @@ function RecapLine({ sessionId }: { sessionId: string }): ReactNode {
     }
   }, [sessionId])
 
+  const hide = useCallback(async (): Promise<void> => {
+    const next = await post(sessionId, 'dismiss')
+    if (next !== undefined) setState(next)
+  }, [sessionId])
+
   if (state === undefined || state.text === '' || !state.visible) return null
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: 8,
-        margin: '0 12px 6px',
-        padding: '6px 8px',
-        border: `0.5px solid ${BORDER}`,
-        borderRadius: 8,
-        background: FILL,
-        color: MUTED,
-        fontSize: scale(0.86),
-        lineHeight: 1.45,
-      }}
-    >
-      <span style={{ flex: 'none', fontWeight: 600, letterSpacing: '.02em' }}>Recap</span>
+    <div style={ROW}>
+      <span style={LABEL}>
+        <span aria-hidden style={{ opacity: 0.9 }}>
+          ✦
+        </span>
+        Recap
+      </span>
       <button
         type="button"
         onClick={() => setRecapOpen(sessionId, true)}
         title={state.text}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          border: 0,
-          padding: 0,
-          background: 'transparent',
-          color: 'var(--dsw-alias-label-secondary, #5c5c5c)',
-          cursor: 'pointer',
-          textAlign: 'left',
-          font: 'inherit',
-          display: '-webkit-box',
-          WebkitLineClamp: 2,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-        }}
+        style={ROW_TEXT}
       >
         {state.text}
       </button>
       {state.stale ? (
-        <span style={{ flex: 'none', color: WARNING, fontSize: scale(0.78) }} title="The session moved on since this recap">
+        <span style={STALE} title="The session moved on since this recap">
           stale
         </span>
       ) : null}
-      <span style={{ flex: 'none', display: 'inline-flex', gap: 4 }}>
-        <button type="button" style={actionStyle} onClick={() => void regenerate()} disabled={busy}>
-          {busy ? '…' : 'Refresh'}
+      <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+        <button type="button" style={ROW_ACTION} onClick={() => setRecapOpen(sessionId, true)} title="Open the full recap">
+          Open
         </button>
-        <button type="button" style={actionStyle} onClick={() => void post(sessionId, 'dismiss').then((next) => next !== undefined && setState(next))}>
-          Hide
+        <button type="button" style={ROW_ACTION} onClick={() => void regenerate()} disabled={busy} title="Regenerate recap">
+          {busy ? '…' : '↻'}
+        </button>
+        <button type="button" style={ROW_ACTION} onClick={() => void hide()} title="Hide recap">
+          ×
         </button>
       </span>
     </div>
@@ -318,10 +358,10 @@ function runRecapCommand(session: { sessionId: string }): void {
 
 /** Register the dock line, the panel, and the `/recap` client action. */
 export function apply(ctx: Context): void {
-  ctx.slots.inject('conversation.composer.dock', () =>
+  ctx.slots.inject('conversation.input.dock', () =>
     ctx.slots.register(
       {
-        name: 'conversation.composer.dock',
+        name: 'conversation.input.dock',
         id: 'dsh-recap',
         order: 10,
       },
