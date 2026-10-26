@@ -7,18 +7,33 @@ export function makeContext(session, options = {}) {
   const listeners = new Map()
   const sections = []
   const shellContributors = []
+  const disposers = []
+
+  const optionalServices = {}
+  if (options.workingDirectory !== undefined) {
+    optionalServices.workingDirectory = options.workingDirectory
+  }
+  if (options.llm !== undefined) optionalServices.llm = options.llm
 
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     effect(fn) {
       const disposer = fn()
-      return typeof disposer === 'function' ? disposer : () => {}
+      const run = typeof disposer === 'function' ? disposer : () => {}
+      disposers.push(run)
+      return run
     },
     on(event, fn) {
       const list = listeners.get(event) ?? []
       list.push(fn)
       listeners.set(event, list)
       return () => {}
+    },
+    /** Optional-service lookup, mirroring `ctx.get(name)`. */
+    get(name) {
+      if (name in optionalServices) return optionalServices[name]
+      if (name === 'sessions') return ctx.sessions
+      return undefined
     },
     sessions: {
       get(id) {
@@ -43,8 +58,7 @@ export function makeContext(session, options = {}) {
       },
     },
     inject(_deps, callback) {
-      callback(ctx)
-      return { dispose: async () => {} }
+      return callback(ctx) ?? { dispose: async () => {} }
     },
     shellEnv: {
       register(contributor) {
@@ -52,7 +66,7 @@ export function makeContext(session, options = {}) {
         return () => {}
       },
     },
-    ...(options.llm === undefined ? {} : { llm: options.llm }),
+    ...optionalServices,
   }
 
   return {
@@ -62,6 +76,11 @@ export function makeContext(session, options = {}) {
     listeners,
     sections,
     shellContributors,
+    /** Run every disposer the plugin registered through `ctx.effect`. */
+    async disposeAll() {
+      for (const disposer of disposers.reverse()) await disposer()
+      disposers.length = 0
+    },
     /** Deliver one Host event to every listener registered for it. */
     emit(event, ...args) {
       for (const fn of listeners.get(event) ?? []) fn(...args)
