@@ -196,11 +196,30 @@ const actionStyle: CSSProperties = {
   padding: '2px 8px',
   lineHeight: 1.3,
 }
+/**
+ * `conversation.input.dock` is a full-width strip: the slot allocates the whole
+ * conversation column and each entry constrains its own box. Copy the host's
+ * own dock geometry (`QueueDock`, `GoalBar`) so the card lines up with the
+ * composer card and the transcript text instead of spanning the whole column.
+ * The tokens are published on the conversation body, with fallbacks for a
+ * composition that does not set them.
+ */
+const DOCK_FRAME: CSSProperties = {
+  boxSizing: 'border-box',
+  width:
+    'calc(100% - var(--dsh-composer-side-clearance, 16px) - var(--dsh-composer-side-clearance, 16px)' +
+    ' - var(--dsh-composer-dock-inset, 8px) - var(--dsh-composer-dock-inset, 8px))',
+  maxWidth:
+    'calc(var(--dsh-composer-card-max-width, 952px) - var(--dsh-composer-dock-inset, 8px) - var(--dsh-composer-dock-inset, 8px))',
+  margin: '0 auto',
+  padding: '0 var(--dsh-composer-dock-inset, 8px)',
+}
 const ROW: CSSProperties = {
+  boxSizing: 'border-box',
   display: 'flex',
   alignItems: 'flex-start',
   gap: 8,
-  margin: '0 0 8px',
+  minWidth: 0,
   padding: '7px 10px',
   border: `0.5px solid ${BORDER}`,
   borderRadius: 'var(--dsw-radius-md, 8px)',
@@ -366,48 +385,50 @@ function RecapLine({ sessionId, locale, useSessionStatus }: {
   }
 
   return (
-    <div style={ROW}>
-      <span style={LABEL}>
-        <span aria-hidden style={{ opacity: 0.9 }}>
-          ✦
+    <div style={DOCK_FRAME}>
+      <div style={ROW}>
+        <span style={LABEL}>
+          <span aria-hidden style={{ opacity: 0.9 }}>
+            ✦
+          </span>
+          {t('action.label')}
         </span>
-        {t('action.label')}
-      </span>
-      <button
-        type="button"
-        onClick={() => setRecapOpen(sessionId)}
-        title={t('action.open')}
-        aria-label={t('action.open')}
-        style={ROW_TEXT}
-      >
-        {state.text}
-      </button>
-      {state.stale ? (
-        <span style={STALE} title={t('action.staleTitle')}>
-          {t('action.stale')}
-        </span>
-      ) : null}
-      <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
         <button
           type="button"
-          style={ROW_ACTION}
-          onClick={() => void regenerate()}
-          disabled={busy}
-          title={t('action.regenerate')}
-          aria-label={t('action.regenerate')}
+          onClick={() => setRecapOpen(sessionId)}
+          title={t('action.open')}
+          aria-label={t('action.open')}
+          style={ROW_TEXT}
         >
-          {busy ? '…' : '↻'}
+          {state.text}
         </button>
-        <button
-          type="button"
-          style={ROW_ACTION}
-          onClick={() => void hide()}
-          title={t('action.hide')}
-          aria-label={t('action.hide')}
-        >
-          ×
-        </button>
-      </span>
+        {state.stale ? (
+          <span style={STALE} title={t('action.staleTitle')}>
+            {t('action.stale')}
+          </span>
+        ) : null}
+        <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+          <button
+            type="button"
+            style={ROW_ACTION}
+            onClick={() => void regenerate()}
+            disabled={busy}
+            title={t('action.regenerate')}
+            aria-label={t('action.regenerate')}
+          >
+            {busy ? '…' : '↻'}
+          </button>
+          <button
+            type="button"
+            style={ROW_ACTION}
+            onClick={() => void hide()}
+            title={t('action.hide')}
+            aria-label={t('action.hide')}
+          >
+            ×
+          </button>
+        </span>
+      </div>
     </div>
   )
 }
