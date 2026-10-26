@@ -163,7 +163,9 @@ const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
 const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
 const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
 const SECONDARY = 'var(--dsw-alias-label-secondary, #555)'
-const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
+/** Hover/selected fill. `--dsw-alias-fill-l1` is not a theme token, so use the
+ *  host's own interactive fill instead of a silent 5% black fallback. */
+const FILL = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05))'
 const ERROR = 'var(--dsw-alias-state-error-primary, #e03131)'
 const FONT = 'var(--dsh-content-font-size, 14px)'
 /** One step of the content font size, so the panel follows the theme setting. */

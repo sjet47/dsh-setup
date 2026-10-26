@@ -33,7 +33,8 @@ A generation that finishes after the log moved on (an event landed, or a human t
 2. **A recap card directly above the composer** (`conversation.input.dock`): a `✦ Recap` label, the first two lines of the recap, a `stale` marker, and `↻` / `×`. Clicking the text opens the same panel. It only appears while a recap exists, is visible, and the Session is not running, so sending a message hides it immediately instead of waiting for the next poll.
 3. The panel lives in the frame-wide `shell.overlay` slot (not a portal into `document.body`), so the shell owns its stacking order and mask. It targets the Session in the centre column and closes when that Session changes.
 4. The line is not full-bleed: the dock allocates the whole conversation column, so the card constrains itself with the host's own geometry (`--dsh-composer-card-max-width`, `--dsh-composer-side-clearance`, `--dsh-composer-dock-inset`) and ends up the same width as the transcript text, centred over the composer.
-5. Both the line and the panel use `--dsw-alias-*` tokens and scale from `--dsh-content-font-size`. The panel is a real modal: `aria-modal`, initial focus, a Tab trap, Escape to close, and focus returning to the opener. Copy comes from the Client locale service (`zh`/`en`).
+5. The card is opaque: it floats over the scrolling transcript, so it paints the host's menu tint over the base layer instead of a translucent fill. Otherwise text scrolling underneath reads through the recap copy.
+6. Both the line and the panel use `--dsw-alias-*` tokens and scale from `--dsh-content-font-size`. The panel is a real modal: `aria-modal`, initial focus, a Tab trap, Escape to close, and focus returning to the opener. Copy comes from the Client locale service (`zh`/`en`).
 
 The composer line hides on the next human message and reappears when a new recap is generated.
 

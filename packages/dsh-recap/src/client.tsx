@@ -149,12 +149,23 @@ const SURFACE = 'var(--dsw-alias-bg-layer-2, #ffffff)'
 const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
 const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
 const MUTED = 'var(--dsw-alias-label-tertiary, #6b6b6b)'
-const FILL = 'var(--dsw-alias-fill-l1, rgba(0,0,0,0.05))'
 const WARN = 'var(--dsw-alias-state-warn-primary, #f08c00)'
 const ERROR = 'var(--dsw-alias-state-error-primary, #e03131)'
 const BRAND = 'var(--dsw-alias-brand-primary, #4d6bfe)'
 const FONT = 'var(--dsh-content-font-size, 14px)'
 const scale = (factor: number): string => `calc(${FONT} * ${factor})`
+
+/**
+ * The composer dock floats over the scrolling transcript, so its card needs an
+ * opaque body: a translucent fill let scrolled text read through the copy.
+ * The host's own dock bars (`QueueDock`, `GoalBar`) use the translucent menu
+ * surface with a heavy backdrop blur; this paints the same menu tint over the
+ * opaque base layer instead, which keeps the host look without depending on
+ * `backdrop-filter` support. (`--dsw-alias-fill-l1` is not a theme token, so
+ * the previous fill silently fell back to a 5% black.)
+ */
+const CARD_SURFACE =
+  'linear-gradient(var(--dsw-specific-menu, rgba(248,249,250,0.58)), var(--dsw-specific-menu, rgba(248,249,250,0.58))), var(--dsw-alias-bg-base, #ffffff)'
 
 const overlayStyle: CSSProperties = {
   position: 'fixed',
@@ -223,7 +234,8 @@ const ROW: CSSProperties = {
   padding: '7px 10px',
   border: `0.5px solid ${BORDER}`,
   borderRadius: 'var(--dsw-radius-md, 8px)',
-  background: FILL,
+  background: CARD_SURFACE,
+  boxShadow: 'var(--dsw-elevation-panel, 0 3px 8px rgba(0,0,0,.06))',
   fontSize: scale(0.88),
   lineHeight: 1.5,
   color: MUTED,
