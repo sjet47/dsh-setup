@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "title": "Session Recap",
+    "description": "A one-line session recap on demand, on resume, or after a few idle minutes."
+  },
+  "action": {
+    "label": "Recap",
+    "open": "Open the full recap",
+    "regenerate": "Regenerate recap",
+    "hide": "Hide recap",
+    "stale": "stale",
+    "staleTitle": "The session moved on since this recap"
+  },
+  "panel": {
+    "title": "Recap",
+    "close": "Close",
+    "generate": "Generate",
+    "regenerate": "Regenerate",
+    "generating": "Recapping…",
+    "dismiss": "Dismiss",
+    "empty": "No recap yet. Generate one from this session's conversation.",
+    "current": "current",
+    "stale": "stale",
+    "autoIdle": "Generates automatically after {minutes} min idle",
+    "failed": "Recap generation failed.",
+    "updateFailed": "Could not update the recap."
+  }
+}

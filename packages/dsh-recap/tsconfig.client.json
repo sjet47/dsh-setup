@@ -22,12 +22,16 @@
       ],
       "@deepseek-ai/dsh-client-ui-input-trigger/client": [
         "../../node_modules/@deepseek-ai/dsh-client-ui-input-trigger/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-locale/client": [
+        "../../node_modules/@deepseek-ai/dsh-client-locale/lib/types/client/index.d.ts"
       ]
     },
     "types": [],
     "noEmitOnError": true
   },
   "include": [
-    "src/client.tsx"
+    "src/client.tsx",
+    "types/shell-overlay.d.ts"
   ]
 }

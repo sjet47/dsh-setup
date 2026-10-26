@@ -1,16 +1,20 @@
 /**
- * dsh-recap — one-line session recap, on demand, on resume, or after five
+ * dsh-recap — one-line session recap, on demand, on resume, or after a few
  * idle minutes.
  *
  * Ported from pi-recap. Generation reuses the recap system prompt and the
  * sanitizer unchanged; the surrounding state machine is rebuilt on dsh's
- * session log, where each recap is a durable `plugin:` record so it survives
- * restart and resume without entering model context.
+ * session log and on a small per-session record file under `$DSH_HOME`.
+ *
+ * A recap is plugin-owned data, not session history: a third-party bundle
+ * resolves its own copy of `@deepseek-ai/dsh-session`, so the private-brand
+ * `appendPluginRecord` entry point cannot write to the runtime's Session.
  * @module dsh-recap
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-client-connection'
@@ -21,14 +25,13 @@ import { sanitizeRecapText } from './sanitize.js'
 export const name = 'recap'
 export const inject = ['commands', 'connection', 'sessions', 'llm'] as const
 
-const RECAP_MAX_TOKENS = 2_048
-const RECAP_TIMEOUT_MS = 30_000
-const AWAY_RECAP_DELAY_MS = 5 * 60 * 1_000
-/** Durable recap record. `seq` is the session log length when it was written. */
+/** Durable recap record. `seq` is the session log length it reflects. */
 interface RecapRecord {
   version: 1
   text: string
   seq: number
+  /** Dismissed by the user; restored hidden instead of popping back up. */
+  hidden?: boolean
 }
 
 const RECAP_SYSTEM_PROMPT = `You write compact recaps for an AI coding-agent session.
@@ -43,6 +46,33 @@ Do not add a label or prefix. Do not use markdown. Do not mention yourself as "t
 Good: Deciding whether pi-inline-skills should switch from $skill to /skill. Recommendation is / only with commands winning; next decide whether leading /skill should expand.
 Bad: Feasible; I'd default to / and skip config. Extension commands win first; next decide whether leading /skill tokens should expand.`
 
+export interface Config {
+  /** Generate recaps at all; commands still report state when false. */
+  enabled: boolean
+  /** Idle delay after a turn before an automatic recap; 0 disables it. */
+  idleMs: number
+  /** Output token budget for one recap request. */
+  maxTokens: number
+  /** Abort one recap request after this long. */
+  timeoutMs: number
+  /** Keep a restored but stale recap visible on resume. */
+  showStale: boolean
+  /** Also recap child subagent sessions automatically. */
+  subagents: boolean
+  /** Delete recap files not touched for this many days; 0 keeps them. */
+  retentionDays: number
+}
+
+export const Config: z<Config> = z.object({
+  enabled: z.boolean().default(true),
+  idleMs: z.number().default(5 * 60 * 1000),
+  maxTokens: z.number().default(2_048),
+  timeoutMs: z.number().default(30_000),
+  showStale: z.boolean().default(true),
+  subagents: z.boolean().default(false),
+  retentionDays: z.number().default(30),
+})
+
 interface ModelOverride {
   provider: string
   model: string
@@ -52,9 +82,24 @@ interface RecapState {
   text: string
   seq: number
   visible: boolean
-  stale: boolean
+  hidden: boolean
   generating: boolean
   timer: ReturnType<typeof setTimeout> | undefined
+  controller: AbortController | undefined
+  /** Incremented by a human turn and by any operation that supersedes a run. */
+  run: number
+}
+
+/**
+ * A generation that a newer user action (dismiss, clear, unload) made
+ * irrelevant. The caller reports success with the current state: the user's
+ * intent already stands, so surfacing a failure would only be noise.
+ */
+class RecapCancelled extends Error {
+  constructor() {
+    super('Recap was cancelled.')
+    this.name = 'RecapCancelled'
+  }
 }
 
 /** Wire state served to the client panel and used by the commands. */
@@ -64,6 +109,8 @@ interface StateWire {
   stale: boolean
   generating: boolean
   current: boolean
+  enabled: boolean
+  idleMs: number
   provider?: string
   model?: string
 }
@@ -77,12 +124,6 @@ function configPath(): string {
   return join(dshHome(), 'dsh-recap.json')
 }
 
-/**
- * Recap records live beside the plugin config rather than in the session log:
- * a third-party bundle resolves its own copy of `@deepseek-ai/dsh-session`, so
- * the private-brand `appendPluginRecord` entry point cannot operate on the
- * runtime's Session instance.
- */
 function recapDir(): string {
   return join(dshHome(), 'dsh-recap')
 }
@@ -95,17 +136,40 @@ function readRecord(sessionId: string): RecapRecord | undefined {
   try {
     const value: unknown = JSON.parse(readFileSync(recapPath(sessionId), 'utf8'))
     if (typeof value !== 'object' || value === null) return undefined
-    const record = value as { text?: unknown; seq?: unknown; version?: unknown }
+    const record = value as { text?: unknown; seq?: unknown; version?: unknown; hidden?: unknown }
     if (record.version !== 1 || typeof record.text !== 'string' || typeof record.seq !== 'number') return undefined
-    return { version: 1, text: record.text, seq: record.seq }
+    return { version: 1, text: record.text, seq: record.seq, ...(record.hidden === true ? { hidden: true } : {}) }
   } catch {
     return undefined
   }
 }
 
+/**
+ * Write one record atomically and privately: the recap names files and
+ * decisions from the session, so it must not be world-readable, and a crash
+ * mid-write must not leave a truncated JSON file behind.
+ */
 function writeRecord(sessionId: string, record: RecapRecord): void {
-  mkdirSync(recapDir(), { recursive: true })
-  writeFileSync(recapPath(sessionId), JSON.stringify(record) + '\n', 'utf8')
+  const dir = recapDir()
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  try {
+    chmodSync(dir, 0o700)
+  } catch {
+    // Best effort on filesystems that do not model POSIX modes.
+  }
+  const path = recapPath(sessionId)
+  const temp = `${path}.tmp-${process.pid}`
+  try {
+    writeFileSync(temp, JSON.stringify(record) + '\n', { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, path)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
+}
+
+function deleteRecord(sessionId: string): void {
+  rmSync(recapPath(sessionId), { force: true })
 }
 
 function readOverride(): ModelOverride | undefined {
@@ -122,8 +186,16 @@ function readOverride(): ModelOverride | undefined {
 
 function writeOverride(value: ModelOverride | undefined): void {
   const path = configPath()
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(value ?? {}, null, 2) + '\n', 'utf8')
+  const dir = dirname(path)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const temp = `${path}.tmp-${process.pid}`
+  try {
+    writeFileSync(temp, JSON.stringify(value ?? {}, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, path)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
 }
 
 /** Flatten one message to text for the recap request; non-text blocks are named. */
@@ -169,20 +241,43 @@ function serializeConversation(messages: readonly Message[]): string {
 }
 
 /**
+ * Drop recap files that have not been touched for the retention window. A
+ * disposed Session is not a deleted one (the user can reopen it later), so
+ * age — not Session lifetime — decides when a record goes away.
+ * @param days - retention window; 0 or less keeps everything.
+ * @param ctx - plugin context for logging.
+ */
+function pruneRecords(days: number, ctx: Context): void {
+  if (days <= 0) return
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
+  let names: string[]
+  try {
+    names = readdirSync(recapDir())
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const path = join(recapDir(), name)
+    try {
+      if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true })
+    } catch (error) {
+      ctx.logger.debug(`dsh-recap: cannot prune ${name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+}
+
+/**
  * Install recap generation, its commands, and the browser routes.
  * @param ctx - plugin context.
+ * @param config - resolved plugin configuration.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config = Config()): void {
   const states = new Map<string, RecapState>()
+  pruneRecords(config.retentionDays, ctx)
 
   function sessionFor(sessionId: string): Session | undefined {
     return ctx.sessions.get(sessionId as SessionId)
-  }
-
-  /** Restore one session's saved recap. */
-  function restore(session: Session): { text: string; seq: number } | undefined {
-    const record = readRecord(String(session.id))
-    return record === undefined ? undefined : { text: record.text, seq: record.seq }
   }
 
   function stateFor(sessionId: string): RecapState | undefined {
@@ -190,14 +285,17 @@ export function apply(ctx: Context): void {
     if (existing !== undefined) return existing
     const session = sessionFor(sessionId)
     if (session === undefined) return undefined
-    const restored = restore(session)
+    const restored = readRecord(sessionId)
+    const current = restored !== undefined && restored.seq === Number(session.seq)
     const state: RecapState = {
       text: restored?.text ?? '',
       seq: restored?.seq ?? -1,
-      visible: restored !== undefined && restored.seq === Number(session.seq),
-      stale: restored !== undefined && restored.seq !== session.seq,
+      visible: restored !== undefined && restored.hidden !== true && (current || config.showStale),
+      hidden: restored?.hidden === true,
       generating: false,
       timer: undefined,
+      controller: undefined,
+      run: 0,
     }
     states.set(sessionId, state)
     return state
@@ -207,15 +305,17 @@ export function apply(ctx: Context): void {
     return state.seq === Number(session.seq)
   }
 
-  function wire(sessionId: string, state: RecapState, session: Session): StateWire {
+  function wire(state: RecapState, session: Session): StateWire {
     const route = readOverride() ?? session.requestContext()
-    const isCurrent = current(state, session)
+    const fresh = current(state, session)
     return {
       text: state.text,
       visible: state.visible,
-      stale: state.text !== '' && !isCurrent,
+      stale: state.text !== '' && !fresh,
       generating: state.generating,
-      current: isCurrent,
+      current: fresh,
+      enabled: config.enabled,
+      idleMs: config.idleMs,
       ...(route === undefined ? {} : { provider: route.provider, model: route.model }),
     }
   }
@@ -225,24 +325,36 @@ export function apply(ctx: Context): void {
     state.timer = undefined
   }
 
+  /** Abort any in-flight request for this state and invalidate its result. */
+  function supersede(state: RecapState): void {
+    state.run += 1
+    state.controller?.abort()
+    state.controller = undefined
+  }
+
   /**
-   * Generate one recap and persist it as a plugin record.
+   * Generate one recap and persist it.
    * @param session - owning session.
    * @param state - in-memory state.
-   * @param manual - whether a human asked (errors surface as thrown text).
+   * @param show - whether a human asked, so the result should surface even when
+   *   the log moved on while streaming.
    * @returns the recap text.
    */
-  async function generate(session: Session, state: RecapState, manual: boolean): Promise<string> {
+  async function generate(session: Session, state: RecapState, show: boolean): Promise<string> {
     if (state.generating) throw new Error('A recap is already being generated.')
+    if (!config.enabled) throw new Error('dsh-recap is disabled in this profile.')
     const route = readOverride() ?? session.requestContext()
     if (route === undefined) throw new Error('No model route for this session yet; send one message first.')
     const messages = session.deriveMessages()
     if (messages.length === 0) throw new Error('No conversation to recap yet.')
     const conversation = serializeConversation(messages)
 
+    const run = ++state.run
+    const startSeq = Number(session.seq)
     state.generating = true
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(new Error('recap request timed out')), RECAP_TIMEOUT_MS)
+    state.controller = controller
+    const timeout = setTimeout(() => controller.abort(new Error('recap request timed out')), config.timeoutMs)
     let text = ''
     let finish: string | undefined
     try {
@@ -251,7 +363,7 @@ export function apply(ctx: Context): void {
         model: route.model,
         system: RECAP_SYSTEM_PROMPT,
         messages: [{ role: 'user', content: [{ type: 'text', text: `## Current Session Context\n${conversation}` }] }],
-        maxTokens: RECAP_MAX_TOKENS,
+        maxTokens: config.maxTokens,
         signal: controller.signal,
         sessionId: session.id,
       })) {
@@ -260,26 +372,35 @@ export function apply(ctx: Context): void {
       }
     } finally {
       clearTimeout(timeout)
+      if (state.controller === controller) state.controller = undefined
       state.generating = false
     }
 
+    if (run !== state.run) throw new RecapCancelled()
     if (finish !== undefined && finish !== 'stop') {
       throw new Error(
         finish === 'max-tokens'
-          ? `output token limit reached (${RECAP_MAX_TOKENS} tokens, including reasoning)`
+          ? `output token limit reached (${config.maxTokens} tokens, including reasoning)`
           : `model stopped with ${finish}`,
       )
     }
     const recap = sanitizeRecapText(text)
     if (recap === '') throw new Error('Recap generation returned empty text.')
 
-    // Store the current log length so a recap is "current" until anything
-    // else is appended.
+    // Events that arrived while streaming make the recap describe an older
+    // state: anchor it at the length it started from, so it reads as stale
+    // instead of claiming to include what it never saw.
+    const movedOn = Number(session.seq) !== startSeq
     state.text = recap
-    state.seq = Number(session.seq)
-    writeRecord(String(session.id), { version: 1, text: recap, seq: state.seq })
-    state.visible = true
-    state.stale = false
+    state.seq = movedOn ? startSeq : Number(session.seq)
+    state.visible = show || !movedOn
+    state.hidden = !state.visible
+    writeRecord(String(session.id), {
+      version: 1,
+      text: recap,
+      seq: state.seq,
+      ...(state.visible ? {} : { hidden: true }),
+    })
     clearTimer(state)
     return recap
   }
@@ -290,28 +411,48 @@ export function apply(ctx: Context): void {
     if (state === undefined) return
 
     if (event.type === 'user/message' && event.data.source?.kind === 'user') {
-      // A new human turn hides the old recap and cancels a pending auto-recaps.
+      // A new human turn hides the old recap and cancels a pending automatic
+      // one. An in-flight request is left to finish: it lands stale (anchored
+      // at the log length it started from), which is more useful than losing
+      // an answer the user asked for.
       state.visible = false
       clearTimer(state)
       return
     }
     if (event.type === 'turn/end') {
-      state.stale = true
       clearTimer(state)
+      if (!config.enabled || config.idleMs <= 0) return
+      if (session.header.origin === 'subagent' && !config.subagents) return
       state.timer = setTimeout(() => {
         state.timer = undefined
         if (state.visible || state.generating) return
         void generate(session, state, false).catch((error: unknown) => {
+          if (error instanceof RecapCancelled) return
           ctx.logger.debug(`dsh-recap: automatic recap failed: ${error instanceof Error ? error.message : String(error)}`)
         })
-      }, AWAY_RECAP_DELAY_MS)
+      }, config.idleMs)
+      return
     }
   })
 
   ctx.on('session/disposed', (session: Session) => {
-    const state = states.get(String(session.id))
-    if (state !== undefined) clearTimer(state)
-    states.delete(String(session.id))
+    const sessionId = String(session.id)
+    const state = states.get(sessionId)
+    if (state !== undefined) {
+      clearTimer(state)
+      supersede(state)
+    }
+    states.delete(sessionId)
+  })
+
+  // Unloading the plugin must stop every pending timer and request; a timer
+  // that survives the context would call into a disposed service.
+  ctx.effect(() => () => {
+    for (const state of states.values()) {
+      clearTimer(state)
+      supersede(state)
+    }
+    states.clear()
   })
 
   ctx.effect(() =>
@@ -328,17 +469,24 @@ export function apply(ctx: Context): void {
         if (raw === 'help') {
           return {
             kind: 'success',
-            text: ['/recap — generate a fresh recap', '/recap status — model and freshness', '/recap config <provider>/<model> — pin the recap model', '/recap config reset — follow the session route', '/recap clear — forget the current recap'].join('\n'),
+            text: [
+              '/recap — generate a fresh recap',
+              '/recap status — model and freshness',
+              '/recap config <provider>/<model> — pin the recap model',
+              '/recap config reset — follow the session route',
+              '/recap clear — forget the current recap',
+            ].join('\n'),
           }
         }
         if (raw === 'status') {
-          const view = wire(sessionId, state, session)
+          const view = wire(state, session)
           return {
             kind: 'success',
             text: [
               `model: ${view.provider ?? '?'}/${view.model ?? '?'}`,
               `recap: ${view.text === '' ? '(none)' : view.text}`,
               `freshness: ${view.current ? 'current' : 'stale'}${view.visible ? '' : ' · hidden'}`,
+              `automatic: ${view.enabled && view.idleMs > 0 ? `after ${Math.round(view.idleMs / 60_000)} min idle` : 'off'}`,
             ].join('\n'),
           }
         }
@@ -366,13 +514,24 @@ export function apply(ctx: Context): void {
           }
           const provider = argument.slice(0, slash)
           const model = argument.slice(slash + 1)
+          const known = ctx.llm.listProviders().map((entry) => entry.id)
+          if (!known.includes(provider)) {
+            return {
+              kind: 'error',
+              text: `Unknown provider "${provider}". Registered providers: ${known.join(', ') || '(none)'}.`,
+            }
+          }
           writeOverride({ provider, model })
           return { kind: 'success', text: `Recap model pinned to ${provider}/${model}.` }
         }
         if (raw === 'clear') {
+          clearTimer(state)
+          supersede(state)
+          deleteRecord(sessionId)
           state.text = ''
+          state.seq = -1
           state.visible = false
-          state.stale = false
+          state.hidden = false
           return { kind: 'success', text: 'Recap cleared.' }
         }
         if (raw !== '') return { kind: 'error', text: 'Usage: /recap [status|config|clear|help]' }
@@ -380,6 +539,7 @@ export function apply(ctx: Context): void {
           const recap = await generate(session, state, true)
           return { kind: 'success', text: recap }
         } catch (error) {
+          if (error instanceof RecapCancelled) return { kind: 'success', text: 'Recap cancelled.' }
           return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
         }
       },
@@ -398,7 +558,7 @@ export function apply(ctx: Context): void {
         if (session === undefined || state === undefined) {
           return Response.json({ error: 'unknown session' }, { status: 404 })
         }
-        return Response.json(wire(sessionId, state, session), { headers: { 'cache-control': 'no-store' } })
+        return Response.json(wire(state, session), { headers: { 'cache-control': 'no-store' } })
       },
     }),
   )
@@ -418,9 +578,11 @@ export function apply(ctx: Context): void {
         try {
           await generate(session, state, true)
         } catch (error) {
-          return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+          if (!(error instanceof RecapCancelled)) {
+            return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
+          }
         }
-        return Response.json(wire(sessionId, state, session), { headers: { 'cache-control': 'no-store' } })
+        return Response.json(wire(state, session), { headers: { 'cache-control': 'no-store' } })
       },
     }),
   )
@@ -437,8 +599,22 @@ export function apply(ctx: Context): void {
         if (session === undefined || state === undefined) {
           return Response.json({ error: 'unknown session' }, { status: 404 })
         }
+        // Dismissing while a request streams must also stop that request from
+        // re-showing the recap when it lands.
+        if (state.generating) supersede(state)
         state.visible = false
-        return Response.json(wire(sessionId, state, session), { headers: { 'cache-control': 'no-store' } })
+        state.hidden = true
+        if (state.text !== '') {
+          try {
+            writeRecord(sessionId, { version: 1, text: state.text, seq: state.seq, hidden: true })
+          } catch (error) {
+            return Response.json(
+              { error: error instanceof Error ? error.message : String(error) },
+              { status: 500 },
+            )
+          }
+        }
+        return Response.json(wire(state, session), { headers: { 'cache-control': 'no-store' } })
       },
     }),
   )
@@ -446,4 +622,4 @@ export function apply(ctx: Context): void {
   ctx.logger.debug('dsh-recap loaded')
 }
 
-export { RECAP_SYSTEM_PROMPT }
+export { RECAP_SYSTEM_PROMPT as SYSTEM_PROMPT }

@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "title": "会话摘要",
+    "description": "按需、恢复会话时或闲置数分钟后生成一句话的会话摘要。"
+  },
+  "action": {
+    "label": "摘要",
+    "open": "打开完整摘要",
+    "regenerate": "重新生成摘要",
+    "hide": "隐藏摘要",
+    "stale": "已过期",
+    "staleTitle": "此后会话有新进展"
+  },
+  "panel": {
+    "title": "会话摘要",
+    "close": "关闭",
+    "generate": "生成",
+    "regenerate": "重新生成",
+    "generating": "生成中…",
+    "dismiss": "忽略",
+    "empty": "还没有摘要。可以从当前会话生成一条。",
+    "current": "最新",
+    "stale": "已过期",
+    "autoIdle": "闲置 {minutes} 分钟后自动生成",
+    "failed": "生成摘要失败。",
+    "updateFailed": "无法更新摘要。"
+  }
+}
