@@ -245,9 +245,15 @@ function DiagramSurface({ svg, scale, offset }: { svg: string; scale: number; of
 
 /* ── panel ────────────────────────────────────────────────────────────────── */
 
-const MIN_SCALE = 0.25
+const MIN_SCALE = 0.1
 const MAX_SCALE = 4
-const ZOOM_STEP = 0.25
+/** Multiplicative step for buttons and the wheel, so each notch feels equal. */
+const ZOOM_STEP = 1.25
+
+/** Keep a scale inside the supported range and at two decimals. */
+function clampScale(value: number): number {
+  return Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round(value * 100) / 100))
+}
 
 const panelStyle: CSSProperties = {
   position: 'fixed',
@@ -259,15 +265,15 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: '4vh 4vw',
+  padding: 12,
   background: 'rgba(0,0,0,0.5)',
 }
 
 const cardStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  width: 'min(1000px, 100%)',
-  height: 'min(760px, 100%)',
+  width: '100%',
+  height: '100%',
   borderRadius: 14,
   border: `1px solid ${BORDER}`,
   background: SURFACE,
@@ -394,22 +400,22 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
   const current = results?.[index]
   const source = subject?.fences[index]?.source ?? ''
 
-  // Fit the drawing to the viewport the first time it appears.
-  useEffect(() => {
+  /** Scale that shows the whole drawing, never above its natural size. */
+  const fitToViewport = useCallback(() => {
     if (current === undefined || !current.ok) return
     const natural = intrinsicSize(current.svg)
     const body = bodyRef.current
     if (natural === undefined || body === null) return
-    const width = body.clientWidth - 48
-    const height = body.clientHeight - 48
+    const width = body.clientWidth - 32
+    const height = body.clientHeight - 32
     if (width <= 0 || height <= 0) return
     const fit = Math.min(width / natural.width, height / natural.height, 1)
-    setScale(Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round(fit * 100) / 100)))
+    setScale(clampScale(fit))
     setOffset({ x: 0, y: 0 })
-  }, [current, key])
+  }, [current])
 
-  const zoom = useCallback((delta: number) => {
-    setScale((value) => Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round((value + delta) * 100) / 100)))
+  const zoom = useCallback((factor: number) => {
+    setScale((value) => clampScale(value * factor))
   }, [])
 
   // Zoom on the wheel, as a diagram viewer should. React registers its wheel
@@ -420,8 +426,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
     if (body === null || showSource) return undefined
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
-      const step = event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP
-      setScale((value) => Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round((value + step) * 100) / 100)))
+      setScale((value) => clampScale(event.deltaY < 0 ? value * ZOOM_STEP : value / ZOOM_STEP))
     }
     body.addEventListener('wheel', onWheel, { passive: false })
     return () => body.removeEventListener('wheel', onWheel)
@@ -493,6 +498,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
                   title={t('panel.diagram').replace('{index}', String(position + 1))}
                   onClick={() => {
                     setIndex(position)
+                    setScale(1)
                     setOffset({ x: 0, y: 0 })
                   }}
                 >
@@ -507,7 +513,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px', borderBottom: `1px solid ${BORDER}` }}>
-          <button type="button" style={iconButtonStyle} title={t('panel.zoomOut')} aria-label={t('panel.zoomOut')} onClick={() => zoom(-ZOOM_STEP)}>
+          <button type="button" style={iconButtonStyle} title={t('panel.zoomOut')} aria-label={t('panel.zoomOut')} onClick={() => zoom(1 / ZOOM_STEP)}>
             <Glyph path={ICON.minus} />
           </button>
           <span style={{ fontSize: 11, color: MUTED, minWidth: 40, textAlign: 'center' }}>{Math.round(scale * 100)}%</span>
@@ -525,6 +531,9 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
             }}
           >
             <Glyph path={ICON.reset} />
+          </button>
+          <button type="button" style={iconButtonStyle} title={t('panel.fit')} aria-label={t('panel.fit')} onClick={fitToViewport}>
+            <Glyph path={ICON.fit} />
           </button>
           <span style={{ width: 1, height: 16, background: BORDER, margin: '0 4px' }} />
           <button

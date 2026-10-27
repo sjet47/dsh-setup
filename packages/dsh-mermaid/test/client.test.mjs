@@ -284,3 +284,35 @@ test('a message without Mermaid renders no action at all', async () => {
   assert.equal(container.querySelector('button'), null)
   await act(() => root.unmount())
 })
+
+/** A drawing wider than the stubbed 800x600 viewport, so fit must shrink it. */
+const WIDE = [
+  '```mermaid',
+  'graph LR',
+  ...Array.from({ length: 8 }, (_, i) => `  N${i}[节点 ${i}] --> N${i + 1}[节点 ${i + 1}]`),
+  '```',
+].join('\n')
+
+test('opens at 100% instead of shrinking a large diagram', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, WIDE)
+  const zoomLabel = [...container.querySelectorAll('span')].map((node) => node.textContent).find((text) => text?.endsWith('%'))
+  assert.equal(zoomLabel, '100%', 'a large diagram still opens at its natural size')
+  unmount()
+})
+
+test('the fit control shrinks a diagram that does not fit', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, WIDE)
+  const fit = [...container.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === 'Fit')
+  assert.ok(fit !== undefined, 'the fit control exists')
+  await act(async () => {
+    fit.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+  })
+  const zoomLabel = [...container.querySelectorAll('span')].map((node) => node.textContent).find((text) => text?.endsWith('%'))
+  assert.notEqual(zoomLabel, '100%', 'fit changed the scale')
+  assert.ok(Number(zoomLabel?.replace('%', '')) < 100, `fit scaled down, got ${zoomLabel}`)
+  unmount()
+})
