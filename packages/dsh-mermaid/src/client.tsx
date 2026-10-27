@@ -269,11 +269,18 @@ const panelStyle: CSSProperties = {
   background: 'rgba(0,0,0,0.5)',
 }
 
+/**
+ * Card size as a fraction of the viewport. Large enough that a complex diagram
+ * has room, small enough that the page around it still reads as context.
+ */
+const CARD_WIDTH = '75vw'
+const CARD_HEIGHT = '75vh'
+
 const cardStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  width: '100%',
-  height: '100%',
+  width: CARD_WIDTH,
+  height: CARD_HEIGHT,
   borderRadius: 14,
   border: `1px solid ${BORDER}`,
   background: SURFACE,
