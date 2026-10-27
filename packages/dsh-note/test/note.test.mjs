@@ -63,6 +63,17 @@ test('memory is prepared in pi’s own pi-note layout and injected', () => {
   assert.equal(harness.sections[0].interpolate, false)
 })
 
+test('the rules text mirrors pi-note’s current guidance', () => {
+  const block = buildPromptAppend('/m', '/s', '')
+  assert.ok(block.includes('Memory is what a future session on this project needs'))
+  assert.ok(block.includes('Write a memory as the conclusion'))
+  assert.ok(block.includes("belongs in the project's own files"))
+  assert.ok(block.includes('where the hook is a short phrase (under ~150 characters)'))
+  assert.ok(block.includes('Put any script longer than a one-liner'))
+  assert.ok(block.includes("`/s` is this session's workspace"))
+  assert.ok(!block.includes('<SCRATCH_DIR>'))
+})
+
 test('unloading the plugin disposes the agent prompt sections', async () => {
   let disposed = 0
   const harness = makeContext(session)

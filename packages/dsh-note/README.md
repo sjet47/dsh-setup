@@ -70,5 +70,7 @@ Reading and deleting go through authenticated `/api/dsh-note/*` routes; only the
 
 ## Differences from pi-note
 
+The rules text is kept in sync with pi-note's `prompt.ts`; only the scratchpad paragraph diverges, for the path mechanics below.
+
 - The detail view has no "open in `$EDITOR`": a browser cannot hand a file to a terminal editor. Use **Copy path** and edit it in your own editor, or ask the agent.
 - `$PI_NOTE_SCRATCHPAD_DIR` expansion in fs tool arguments is replaced by an absolute path plus `$DSH_NOTE_SCRATCHPAD_DIR` for shell calls.
