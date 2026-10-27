@@ -21,7 +21,7 @@ A generation that finishes after the log moved on (an event landed, or a human t
 | Command | Result |
 |---------|--------|
 | `/recap` | Generate and show a fresh recap |
-| `/recap status` | Model, current text, freshness, and the automatic window |
+| `/recap status` | Model, detected language, current text, freshness, and the automatic window |
 | `/recap config` | Show the pinned or inherited model and the registered providers |
 | `/recap config <provider>/<model>` | Pin the recap model (the provider must be registered) |
 | `/recap config reset` | Follow the session's own route again |
@@ -81,4 +81,11 @@ id is free-form because catalog membership does not constrain routing.
 
 ## Generation
 
-The sanitizer is pi-recap's; the system prompt follows it, plus an explicit rule that the recap is written in the language of the user's messages (a Chinese session recaps in Chinese, an English one in English), with a worked example in each. Length guidance is per language: ~160 characters in English, ~80 in Chinese. The request uses dsh's `ctx.llm.stream` with the session's current route (or the pinned one), `maxTokens` output tokens and a `timeoutMs` timeout. Failures on automatic recaps stay silent; manual failures report the reason, and the panel shows the Host's error text instead of a generic message.
+A recap takes two requests on the session's route (or the pinned one), both through dsh's `ctx.llm.stream`:
+
+1. **Language detection** (`src/language.ts`). It sees *only* the user's own messages — never the assistant's replies — and answers one code (`en`, `zh-Hans`, `zh-Hant`, `ja`, `ko`, …, `unknown`). This exists because one request cannot do both jobs: the recap request carries User *and* Assistant turns, so a short Chinese question followed by a long English answer reads as English and produced English recaps. The probe asks for the cheapest reasoning level the route advertises (`off` where offered), reads at most 512 output tokens, and gives up after 8 s.
+2. **The recap itself**, with the detected language appended as a hard `## Output language` instruction. The system prompt keeps a soft rule for the case where nothing was detected, so the model judges from the user's messages instead.
+
+The 512-token probe budget is not padding. Measured on `deepseek-flash` through the local provider, a one-word answer still spends 13–135 tokens thinking first, and the route ignores `reasoning.effort` / `reasoning.enabled: false` entirely — a 32-token budget returned an empty string on roughly one call in six. So the detector degrades in two steps: if the model answer is empty, truncated, unparsable, or times out, the **script heuristic** (`heuristicLanguage`: Han/kana/Hangul/Cyrillic/Arabic counts over the user prose, with code fences, inline code, URLs, and paths stripped first) decides; only when that is inconclusive does the recap prompt's soft rule apply. Twelve live probes landed 12/12 correct answers in 0.5–1.5 s, and a two-request recap took 1.9–2.5 s end to end.
+
+The sanitizer is pi-recap's. Length guidance is per language: ~160 characters for a Latin script, ~80 for CJK. A detection result is cached per Session against the exact user text, so regenerating without a new human turn does not re-detect, and `/recap status` reports both the code and whether the model or the heuristic decided it. `maxTokens` and `timeoutMs` govern the recap request; the probe has its own budget. Failures on automatic recaps stay silent; manual failures report the reason, and the panel shows the Host's error text instead of a generic message.

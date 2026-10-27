@@ -19,8 +19,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { Message, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { sanitizeRecapText } from './sanitize.js'
+import {
+  LANGUAGE_DETECTION_SYSTEM_PROMPT,
+  LANGUAGE_MAX_TOKENS,
+  collectUserText,
+  heuristicLanguage,
+  languageInstruction,
+  parseLanguageReply,
+} from './language.js'
 
 export const name = 'recap'
 export const inject = ['commands', 'connection', 'sessions', 'llm'] as const
@@ -37,15 +45,15 @@ interface RecapRecord {
 const RECAP_SYSTEM_PROMPT = `You write compact recaps for an AI coding-agent session.
 
 Given the current session context, produce one plain-text sentence for the user to resume later.
-Write it in the main language of the user's messages: a Chinese session recaps in Chinese, an English session in English. Never fall back to English when the user writes Chinese. Keep code identifiers, file paths, and command names exactly as they appear.
+Write it in the language the session's human writes in. A dedicated detection step supplies that language when it is known; when this prompt says nothing about it, infer it from the user's own messages rather than from the assistant's replies.
 Start with the user's goal or reason for the session, inferred from user messages. Do not start with the assistant's answer.
 Then include the current outcome, important decision, touched file, blocker, or likely next action only if it helps resume.
 Prefer: Goal/purpose. Current state. Next action.
-Length: about 160 characters in English, or about 80 characters in Chinese. Stay under 240 characters (120 in Chinese).
+Length: about 160 characters for a Latin-script language, about 80 for Chinese, Japanese, or Korean. Stay under 240 characters, or 120 for CJK.
 Do not add a label or prefix. Do not use markdown. Do not mention yourself as "the assistant".
 
-Good (zh): 在定 pi-inline-skills 该不该从 $skill 换成 /skill；倾向只留 / 且命令优先，下一步决定开头的 /skill 是否展开。
-Bad (zh): 可行；我会默认用 / 并跳过配置。扩展命令优先，下一步决定开头 /skill token 是否展开。
+Good (zh-Hans): 在定 pi-inline-skills 该不该从 $skill 换成 /skill；倾向只留 / 且命令优先，下一步决定开头的 /skill 是否展开。
+Bad (zh-Hans): 可行；我会默认用 / 并跳过配置。扩展命令优先，下一步决定开头 /skill token 是否展开。
 Good (en): Deciding whether pi-inline-skills should switch from $skill to /skill. Recommendation is / only with commands winning; next decide whether leading /skill should expand.
 Bad (en): Feasible; I'd default to / and skip config. Extension commands win first; next decide whether leading /skill tokens should expand.`
 
@@ -100,6 +108,8 @@ interface ProviderOption {
 const CATALOG_TTL_MS = 60_000
 /** One provider's catalog read must not hold the configuration page open. */
 const CATALOG_TIMEOUT_MS = 5_000
+/** Language detection is one word; a recap must not wait long for it. */
+const LANGUAGE_TIMEOUT_MS = 8_000
 
 /**
  * Bound an adapter call that takes no cancellation signal.
@@ -133,6 +143,8 @@ interface RecapState {
   controller: AbortController | undefined
   /** Incremented by a human turn and by any operation that supersedes a run. */
   run: number
+  /** Detected human language and the user text it was derived from. */
+  language: { text: string; code: string; source: 'model' | 'heuristic' } | undefined
 }
 
 /**
@@ -313,6 +325,31 @@ function pruneRecords(days: number, ctx: Context): void {
 }
 
 /**
+ * Bound one probe by both the surrounding generation and its own deadline.
+ *
+ * Written out instead of `AbortSignal.any` + `AbortSignal.timeout` so the
+ * timeout is cleared when the probe ends early; a stray 8 s timer otherwise
+ * outlives the request it was guarding.
+ * @param signal - the surrounding generation's cancellation.
+ * @param ms - this probe's own budget.
+ * @returns a signal to pass to the request, and a disposer to run afterwards.
+ */
+function probeBudget(signal: AbortSignal, ms: number): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController()
+  const forward = (): void => controller.abort(signal.reason)
+  if (signal.aborted) forward()
+  else signal.addEventListener('abort', forward, { once: true })
+  const timer = setTimeout(() => controller.abort(new Error('language detection timed out')), ms)
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', forward)
+    },
+  }
+}
+
+/**
  * Install recap generation, its commands, and the browser routes.
  * @param ctx - plugin context.
  * @param config - resolved plugin configuration.
@@ -341,6 +378,7 @@ export function apply(ctx: Context, config: Config = Config()): void {
       timer: undefined,
       controller: undefined,
       run: 0,
+      language: undefined,
     }
     states.set(sessionId, state)
     return state
@@ -378,6 +416,102 @@ export function apply(ctx: Context, config: Config = Config()): void {
   }
 
   /**
+   * The least reasoning level a route offers, so a detection call does not pay
+   * for a thinking pass it cannot use.
+   *
+   * Effort ids are branded strings; the brand is a compile-time marker only, so
+   * the adapter's own id passes through without a runtime constructor import.
+   * @param route - provider and model that will answer.
+   * @param signal - cancellation for the capability lookup.
+   * @returns the effort to request, or undefined when the route declares none.
+   */
+  async function detectionEffort(
+    route: { provider: string; model: string },
+    signal: AbortSignal,
+  ): Promise<ReasoningEffortId | undefined> {
+    try {
+      const info = await ctx.llm.resolveModelInfo(route.provider, route.model, signal)
+      const efforts = info.reasoning?.efforts
+      if (efforts === undefined || efforts.length === 0) return undefined
+      // `off` is named explicitly where an adapter offers it; otherwise the
+      // list is ordered least-to-greatest, so the first entry is the cheapest.
+      const off = efforts.find((effort) => String(effort.id) === 'off' || /^off$/i.test(effort.name))
+      return (off ?? efforts[0])?.id
+    } catch {
+      // A route that cannot describe its capabilities can still answer; an
+      // unnamed reasoning level is not worth failing a recap over.
+      return undefined
+    }
+  }
+
+  /**
+   * Ask a small model which language the human writes in, and fall back to the
+   * script heuristic when it cannot answer.
+   *
+   * The detection request carries the user's own words and nothing else: the
+   * conversation block mixes in the model's replies, which is what made a
+   * Chinese session recap in English. A reasoning route may still think its way
+   * through the whole budget before emitting the code, so an empty or truncated
+   * answer degrades to the heuristic instead of to English.
+   * @param route - provider and model that answers.
+   * @param session - owning session, for request attribution.
+   * @param state - in-memory state, which caches the answer per user text.
+   * @param messages - model-visible history.
+   * @param signal - cancellation owned by the surrounding generation.
+   * @returns the detected language and how it was decided, or undefined.
+   */
+  async function detectLanguage(
+    route: { provider: string; model: string },
+    session: Session,
+    state: RecapState,
+    messages: readonly Message[],
+    signal: AbortSignal,
+  ): Promise<RecapState['language']> {
+    const userText = collectUserText(messages)
+    if (userText === '') return undefined
+    const cached = state.language
+    // Regenerating without a new human turn is the same question again.
+    if (cached !== undefined && cached.text === userText) return cached
+
+    const effort = await detectionEffort(route, signal)
+    const budget = probeBudget(signal, Math.min(LANGUAGE_TIMEOUT_MS, config.timeoutMs))
+    let reply = ''
+    try {
+      for await (const chunk of ctx.llm.stream({
+        provider: route.provider,
+        model: route.model,
+        ...(effort === undefined ? {} : { reasoningEffort: effort }),
+        system: LANGUAGE_DETECTION_SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: [{ type: 'text', text: userText }] }],
+        maxTokens: LANGUAGE_MAX_TOKENS,
+        signal: budget.signal,
+        sessionId: session.id,
+      })) {
+        if (chunk.type !== 'text-delta') continue
+        reply += chunk.text
+        // The answer is one code: stop as soon as it is readable instead of
+        // waiting for a model that wants to explain itself.
+        if (parseLanguageReply(reply) !== undefined) break
+      }
+    } catch (error) {
+      ctx.logger.debug(
+        `dsh-recap: language detection failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      budget.dispose()
+    }
+
+    const detected = parseLanguageReply(reply)
+    if (detected !== undefined) {
+      state.language = { text: userText, code: detected, source: 'model' }
+      return state.language
+    }
+    const fallback = heuristicLanguage(userText)
+    state.language = fallback === undefined ? undefined : { text: userText, code: fallback, source: 'heuristic' }
+    return state.language
+  }
+
+  /**
    * Generate one recap and persist it.
    * @param session - owning session.
    * @param state - in-memory state.
@@ -403,10 +537,17 @@ export function apply(ctx: Context, config: Config = Config()): void {
     let text = ''
     let finish: string | undefined
     try {
+      // Decide the language first, from the human's own words: the conversation
+      // block also carries the assistant's replies, and a long English answer
+      // to a short Chinese question is what used to force an English recap.
+      const language = await detectLanguage(route, session, state, messages, controller.signal)
+      if (run !== state.run) throw new RecapCancelled()
+      const instruction = language === undefined ? '' : languageInstruction(language.code)
+      const system = instruction === '' ? RECAP_SYSTEM_PROMPT : `${RECAP_SYSTEM_PROMPT}${instruction}`
       for await (const chunk of ctx.llm.stream({
         provider: route.provider,
         model: route.model,
-        system: RECAP_SYSTEM_PROMPT,
+        system,
         messages: [{ role: 'user', content: [{ type: 'text', text: `## Current Session Context\n${conversation}` }] }],
         maxTokens: config.maxTokens,
         signal: controller.signal,
@@ -529,6 +670,7 @@ export function apply(ctx: Context, config: Config = Config()): void {
             kind: 'success',
             text: [
               `model: ${view.provider ?? '?'}/${view.model ?? '?'}`,
+              `language: ${state.language === undefined ? '(not detected yet)' : `${state.language.code} · ${state.language.source}`}`,
               `recap: ${view.text === '' ? '(none)' : view.text}`,
               `freshness: ${view.current ? 'current' : 'stale'}${view.visible ? '' : ' · hidden'}`,
               `automatic: ${view.enabled && view.idleMs > 0 ? `after ${Math.round(view.idleMs / 60_000)} min idle` : 'off'}`,
