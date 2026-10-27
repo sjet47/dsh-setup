@@ -32,6 +32,13 @@ pnpm run smoke       # render each client bundle's slots in Node
 
 A package with a browser half compiles `src/client.tsx` to CommonJS and wraps it in the dsh module-loader frame at `lib/client.js`; `package.json`'s `dsh.client` then makes the Host serve it. A client-only slot that a standalone bundle cannot depend on (such as `shell.overlay`, declared by `dsh-client-ui-layout`) is mirrored in `types/*.d.ts` as a module augmentation for the client build.
 
+## dsh compatibility
+
+1. Every package declares `engines.dsh` as a caret range over the dsh line it was built against (`^0.2.1-rc.3`), so an rc or patch bump inside `0.2.x` keeps loading without an edit.
+2. The Host enforces that range at boot: an unsatisfied range makes it **skip the whole bundle** (`dsh: skipping profile bundle "dsh-note": Error: Plugin dsh-note@0.1.0 is incompatible with dsh …`) and the plugin disappears from the UI — no panel, no command, no route. `dsh plugin allow-version` only silences that gate; it does not fix a real API break.
+3. After updating the dsh app, run `pnpm install` (this pulls the matching `@deepseek-ai/*` devDependencies used for type checking), then `pnpm run build && pnpm test && pnpm run smoke`. When dsh moves to a new minor, bump the root `devDependencies` and every `engines.dsh` together.
+4. Host rows and routes only come from the newly composed tree, so a version change needs a dsh restart; client bundles reload on their own.
+
 ## Install
 
 From the Web **Plugins** page:
