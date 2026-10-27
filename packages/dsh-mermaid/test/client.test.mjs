@@ -316,3 +316,16 @@ test('the fit control shrinks a diagram that does not fit', async () => {
   assert.ok(Number(zoomLabel?.replace('%', '')) < 100, `fit scaled down, got ${zoomLabel}`)
   unmount()
 })
+
+test('the drawing host spans the body so the diagram centres', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, MD)
+  const host = container.querySelector('[role="dialog"] div[style*="transform"]')
+  assert.ok(host !== null, 'the drawing host exists')
+  // A host sized to its content leaves the drawing pinned to the left edge:
+  // `align-items: stretch` on the flex parent only covers the cross axis.
+  assert.equal(host.style.width, '100%')
+  assert.equal(host.style.height, '100%')
+  unmount()
+})

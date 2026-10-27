@@ -236,6 +236,8 @@ function DiagramSurface({ svg, scale, offset }: { svg: string; scale: number; of
     <div
       ref={hostRef}
       style={{
+        width: '100%',
+        height: '100%',
         transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
         transformOrigin: 'center center',
       }}
@@ -586,7 +588,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
           {failure !== null && <div style={{ ...centered, color: ERROR, fontSize: 12 }}>{failure}</div>}
           {!loading && failure === null && showSource && <SourceView source={source} />}
           {!loading && failure === null && !showSource && current !== undefined && current.ok && (
-            <div style={{ ...centered, padding: 0, alignItems: 'stretch', justifyContent: 'stretch' }}>
+            <div style={{ ...centered, padding: 0 }}>
               <DiagramSurface svg={current.svg} scale={scale} offset={offset} />
             </div>
           )}
