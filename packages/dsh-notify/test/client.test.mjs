@@ -25,6 +25,34 @@ function loadClient(pageWindow) {
 }
 
 /** Minimal document/window doubles for the wake listeners. */
+/**
+ * A Client context double that enforces the rule the real one does: reading a
+ * service that was not injected throws, and `get()` is the optional accessor.
+ *
+ * The earlier double exposed `sessions` as a plain property, which is why the
+ * undeclared access that crashed the Desktop went unnoticed.
+ * @param injected - the context's own fields, e.g. `uiWorkspace`.
+ * @param services - services reachable through `get()` only.
+ */
+function clientCtx(injected, services = {}) {
+  const ctx = { ...injected }
+  Object.defineProperty(ctx, 'get', {
+    value: (name) => services[name],
+    enumerable: false,
+  })
+  // Undeclared service reads throw, exactly like Cordis.
+  for (const name of Object.keys(services)) {
+    if (name in injected) continue
+    Object.defineProperty(ctx, name, {
+      get() {
+        throw new Error(`cannot get property "${name}" without inject`)
+      },
+      enumerable: false,
+    })
+  }
+  return ctx
+}
+
 /** A catalog that either already lists the session or gains it later. */
 function catalog(ids) {
   const byId = Object.fromEntries(ids.map((id) => [id, { id }]))
@@ -80,11 +108,10 @@ test('a claimed session is revealed through uiWorkspace.openSession', async () =
   try {
     const client = loadClient(dom.pageWindow)
     assert.deepEqual(client.inject, ['uiWorkspace'])
-    client.apply({
-      uiWorkspace: { openSession: (id) => opened.push(id) },
-      sessions: catalog(['session-abc']),
-      effect: (run) => effects.push(run()),
-    })
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) },
+      { sessions: catalog(['session-abc']) },
+    ))
     // The first poll runs immediately; give the promise chain one turn.
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(claims[0], { path: '/api/dsh-notify/claim', method: 'POST' })
@@ -104,11 +131,10 @@ test('an idle claim does not switch sessions', async () => {
   const effects = []
   try {
     const client = loadClient(dom.pageWindow)
-    client.apply({
-      uiWorkspace: { openSession: (id) => opened.push(id) },
-      sessions: catalog([]),
-      effect: (run) => effects.push(run()),
-    })
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) },
+      { sessions: catalog([]) },
+    ))
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(opened, [])
   } finally {
@@ -131,11 +157,10 @@ test('a transport failure keeps the poller alive instead of throwing', async () 
   const effects = []
   try {
     const client = loadClient(dom.pageWindow)
-    client.apply({
-      uiWorkspace: { openSession: (id) => opened.push(id) },
-      sessions: catalog([]),
-      effect: (run) => effects.push(run()),
-    })
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) },
+      { sessions: catalog([]) },
+    ))
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(opened, [])
     assert.equal(attempts, 1)
@@ -156,7 +181,10 @@ test('disposing the plugin stops polling and drops the listeners', async () => {
   }
   const effects = []
   const client = loadClient(dom.pageWindow)
-  client.apply({ uiWorkspace: { openSession: () => {} }, sessions: catalog([]), effect: (run) => effects.push(run()) })
+  client.apply(clientCtx(
+    { uiWorkspace: { openSession: () => {} }, effect: (run) => effects.push(run()) },
+    { sessions: catalog([]) },
+  ))
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(calls, 1)
   for (const dispose of effects) dispose()
@@ -189,12 +217,11 @@ test('a session the client does not know yet is opened once it appears', async (
   const effects = []
   try {
     const client = loadClient(dom.pageWindow)
-    client.apply({
-      uiWorkspace: { openSession: (id) => opened.push(id) },
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) },
       // Appears after 500ms, i.e. after the first retry has been scheduled.
-      sessions: catalogAfter('session-late', 500),
-      effect: (run) => effects.push(run()),
-    })
+      { sessions: catalogAfter('session-late', 500) },
+    ))
     await new Promise((resolve) => setTimeout(resolve, 30))
     assert.deepEqual(opened, [], 'must not switch to an id the client cannot resolve')
     await new Promise((resolve) => setTimeout(resolve, 1200))
@@ -202,6 +229,58 @@ test('a session the client does not know yet is opened once it appears', async (
   } finally {
     for (const dispose of effects) dispose()
     globalThis.fetch = previousFetch
+    dom.restore()
+  }
+})
+
+test('an undeclared service read would crash the page, and the plugin never does one', async () => {
+  const dom = installDomDoubles()
+  const previousFetch = globalThis.fetch
+  const warnings = []
+  const previousWarn = console.warn
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ sessionId: 'session-x' }) })
+  console.warn = (...args) => warnings.push(args.join(' '))
+  const opened = []
+  const effects = []
+  try {
+    const client = loadClient(dom.pageWindow)
+    // The catalog is reachable only through get(); a direct read throws, and
+    // this apply must not surface that throw to the loader.
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) },
+      { sessions: catalog(['session-x']) },
+    ))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.deepEqual(opened, ['session-x'])
+    assert.deepEqual(warnings, [], 'no containment path was taken')
+  } finally {
+    for (const dispose of effects) dispose()
+    console.warn = previousWarn
+    globalThis.fetch = previousFetch
+    dom.restore()
+  }
+})
+
+test('a throwing context degrades to a warning instead of failing the entry', () => {
+  const dom = installDomDoubles()
+  const warnings = []
+  const previousWarn = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    const client = loadClient(dom.pageWindow)
+    // Property access on an undeclared service throws in the real Client; the
+    // Desktop turns an entry that does not activate into a fatal boot error.
+    const hostile = {}
+    Object.defineProperty(hostile, 'uiWorkspace', {
+      get() {
+        throw new Error('cannot get property "uiWorkspace" without inject')
+      },
+    })
+    assert.doesNotThrow(() => client.apply(hostile))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /reveal poller is unavailable/)
+  } finally {
+    console.warn = previousWarn
     dom.restore()
   }
 })

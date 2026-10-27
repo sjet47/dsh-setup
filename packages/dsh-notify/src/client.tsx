@@ -97,13 +97,34 @@ function reveal(
 
 /**
  * Install the claim poller.
+ *
+ * Every failure here is contained: the Desktop treats a Client entry that does
+ * not reach `active` as a fatal start-up error, and takes the whole window down
+ * with it. A notification nicety must never be able to do that, so a bug in
+ * this half degrades to "the click only raises the window".
  * @param ctx - client plugin context; `uiWorkspace` is injected.
  */
 export function apply(ctx: Context): void {
-  const scoped = ctx as unknown as { uiWorkspace?: WorkspaceCommands; sessions?: SessionCatalog }
+  try {
+    start(ctx)
+  } catch (error) {
+    console.warn('dsh-notify: the reveal poller is unavailable', error)
+  }
+}
+
+/** The actual registration, kept separate so {@link apply} can contain it. */
+function start(ctx: Context): void {
+  const scoped = ctx as unknown as {
+    uiWorkspace?: WorkspaceCommands
+    /** Optional service access; reading `ctx.sessions` directly throws. */
+    get?(name: string): unknown
+  }
   const workspace = scoped.uiWorkspace
   if (workspace === undefined) return
-  const sessions = scoped.sessions
+  // Read through `get` rather than `ctx.sessions`: the session catalog is used
+  // only to decide whether a reveal can land, so it must stay optional instead
+  // of turning into a hard dependency this composition might not satisfy.
+  const sessions = scoped.get?.('sessions') as SessionCatalog | undefined
 
   let disposed = false
   let timer: ReturnType<typeof setTimeout> | undefined

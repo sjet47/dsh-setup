@@ -180,10 +180,27 @@ function runDetached(command: string, logger: { warn(message: string): void }): 
 
 /**
  * Install the notification forwarder.
+ *
+ * Contained on purpose: the Desktop refuses to start when a profile entry does
+ * not reach `active`, so a bug in this plugin must cost notifications, not the
+ * application. Failures above this line (Config validation) stay visible.
  * @param ctx - plugin context.
  * @param config - resolved plugin configuration.
  */
 export function apply(ctx: Context, config: Config = Config()): void {
+  try {
+    install(ctx, config)
+  } catch (error) {
+    ctx.logger.warn(`dsh-notify: disabled itself after a setup failure: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/**
+ * The actual wiring, kept separate so {@link apply} can contain it.
+ * @param ctx - plugin context.
+ * @param config - resolved plugin configuration.
+ */
+function install(ctx: Context, config: Config): void {
   if (!config.enabled) return
   if (process.platform !== 'linux') {
     ctx.logger.info('dsh-notify: desktop notifications need the Linux D-Bus session bus; staying idle')
