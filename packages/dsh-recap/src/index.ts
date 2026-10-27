@@ -37,14 +37,17 @@ interface RecapRecord {
 const RECAP_SYSTEM_PROMPT = `You write compact recaps for an AI coding-agent session.
 
 Given the current session context, produce one plain-text sentence for the user to resume later.
+Write it in the main language of the user's messages: a Chinese session recaps in Chinese, an English session in English. Never fall back to English when the user writes Chinese. Keep code identifiers, file paths, and command names exactly as they appear.
 Start with the user's goal or reason for the session, inferred from user messages. Do not start with the assistant's answer.
 Then include the current outcome, important decision, touched file, blocker, or likely next action only if it helps resume.
 Prefer: Goal/purpose. Current state. Next action.
-Target about 160 characters. Stay under 240 characters.
+Length: about 160 characters in English, or about 80 characters in Chinese. Stay under 240 characters (120 in Chinese).
 Do not add a label or prefix. Do not use markdown. Do not mention yourself as "the assistant".
 
-Good: Deciding whether pi-inline-skills should switch from $skill to /skill. Recommendation is / only with commands winning; next decide whether leading /skill should expand.
-Bad: Feasible; I'd default to / and skip config. Extension commands win first; next decide whether leading /skill tokens should expand.`
+Good (zh): 在定 pi-inline-skills 该不该从 $skill 换成 /skill；倾向只留 / 且命令优先，下一步决定开头的 /skill 是否展开。
+Bad (zh): 可行；我会默认用 / 并跳过配置。扩展命令优先，下一步决定开头 /skill token 是否展开。
+Good (en): Deciding whether pi-inline-skills should switch from $skill to /skill. Recommendation is / only with commands winning; next decide whether leading /skill should expand.
+Bad (en): Feasible; I'd default to / and skip config. Extension commands win first; next decide whether leading /skill tokens should expand.`
 
 export interface Config {
   /** Generate recaps at all; commands still report state when false. */

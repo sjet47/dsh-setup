@@ -81,4 +81,4 @@ id is free-form because catalog membership does not constrain routing.
 
 ## Generation
 
-The system prompt and the 320-character sanitizer are pi-recap's. The request uses dsh's `ctx.llm.stream` with the session's current route (or the pinned one), `maxTokens` output tokens and a `timeoutMs` timeout. Failures on automatic recaps stay silent; manual failures report the reason, and the panel shows the Host's error text instead of a generic message.
+The sanitizer is pi-recap's; the system prompt follows it, plus an explicit rule that the recap is written in the language of the user's messages (a Chinese session recaps in Chinese, an English one in English), with a worked example in each. Length guidance is per language: ~160 characters in English, ~80 in Chinese. The request uses dsh's `ctx.llm.stream` with the session's current route (or the pinned one), `maxTokens` output tokens and a `timeoutMs` timeout. Failures on automatic recaps stay silent; manual failures report the reason, and the panel shows the Host's error text instead of a generic message.

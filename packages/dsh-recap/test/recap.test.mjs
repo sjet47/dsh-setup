@@ -41,7 +41,10 @@ function makeSession() {
  */
 function makeLlm(reply, gate) {
   return {
-    async *stream() {
+    /** Every request the plugin issued, so a test can read the system prompt. */
+    requests: [],
+    async *stream(request) {
+      this.requests.push(request)
       yield { type: 'text-delta', index: 0, text: reply }
       if (gate !== undefined) await gate
       yield { type: 'finish', reason: { kind: 'stop' } }
@@ -103,6 +106,23 @@ test('generating a recap stores it and marks it current', async () => {
   // The recap names files and decisions: it must not be world readable.
   assert.equal(statSync(file).mode & 0o777, 0o600)
   assert.equal(statSync(join(home, 'dsh-recap')).mode & 0o777, 0o700)
+})
+
+test('the recap request asks for the language the user writes in', async () => {
+  freshHome()
+  const llm = makeLlm('在决定 recap 的语言；下一步按会话语言输出。')
+  const harness = makeContext(makeSession(), { llm })
+  apply(harness.ctx)
+  await generate(harness)
+
+  const [request] = llm.requests
+  // A Chinese session must not be recapped in English: the prompt is the only
+  // thing that decides the output language, so pin the rule a test can see.
+  assert.match(request.system, /language of the user's messages/i)
+  assert.match(request.system, /Chinese/i)
+  // Both languages need a worked example, or the model mirrors the only one.
+  assert.match(request.system, /Good \(zh\):/)
+  assert.match(request.system, /Good \(en\):/)
 })
 
 test('/recap clear forgets the recap on disk, not only in memory', async () => {
