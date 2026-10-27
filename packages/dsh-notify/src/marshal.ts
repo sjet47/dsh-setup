@@ -268,6 +268,9 @@ export interface ParsedMessage {
   readonly serial: number
   readonly replySerial?: number
   readonly member?: string
+  readonly interface?: string
+  readonly path?: string
+  readonly sender?: string
   readonly errorName?: string
   readonly signature: string
   readonly body: readonly unknown[]
@@ -452,6 +455,9 @@ export function decodeMessage(data: Buffer): ParsedMessage | undefined {
   const fieldsEnd = FIXED_HEADER + fieldsLength
   let replySerial: number | undefined
   let member: string | undefined
+  let interfaceName: string | undefined
+  let path: string | undefined
+  let sender: string | undefined
   let errorName: string | undefined
   let signature = ''
   while (reader.pos < fieldsEnd) {
@@ -465,6 +471,15 @@ export function decodeMessage(data: Buffer): ParsedMessage | undefined {
         break
       case FIELD.member:
         member = typeof value === 'string' ? value : undefined
+        break
+      case FIELD.interface:
+        interfaceName = typeof value === 'string' ? value : undefined
+        break
+      case FIELD.path:
+        path = typeof value === 'string' ? value : undefined
+        break
+      case FIELD.sender:
+        sender = typeof value === 'string' ? value : undefined
         break
       case FIELD.errorName:
         errorName = typeof value === 'string' ? value : undefined
@@ -480,5 +495,5 @@ export function decodeMessage(data: Buffer): ParsedMessage | undefined {
   const bodyReader = new Reader(data.subarray(0, total), 0, bodyStart)
   const body = bodyLength > 0 ? readAll(bodyReader, signature) : []
 
-  return { type, serial, replySerial, member, errorName, signature, body, length: total }
+  return { type, serial, replySerial, member, interface: interfaceName, path, sender, errorName, signature, body, length: total }
 }

@@ -15,6 +15,25 @@
 5. 子代理会话默认不发通知。
 6. urgency 固定为 normal：quickshell 的 critical 通知不会自动消失，对「回答好了」这种日常提示
    不合适。
+7. 通知带一个 `default` action，所以整张卡片可点。点一下 = 切到那条会话（见下面「点击跳转」）。
+
+## 点击跳转
+
+点击发生在 Host（D-Bus `ActionInvoked`），但「切到哪条会话」只有已连接的 UI 能改。所以分成两半：
+
+1. Host 收到 `ActionInvoked` 后记下会话 id，挂在一次性的 `POST /api/dsh-notify/claim` 后面，
+   同时尝试把 DSH 窗口抬到最前（`focusCommand`）。
+2. 浏览器那一半（`src/client.tsx`）轮询这个路由，拿到 id 就调
+   `uiWorkspace.openSession(sessionId)`，并重试几次以覆盖会话列表还没加载的情况。
+
+几个由此而来的事实：
+
+1. 任何已打开的 DSH 客户端都会响应，谁先 claim 谁跳转；同一个点击只会被消费一次。
+2. claim 有 60 秒有效期：一分钟后再打开的客户端不会莫名其妙跳到一条旧会话。
+3. 用轮询而不是事件推送，是因为 Remote Event 需要在 Host 侧做 typert 代码生成，普通 JS bundle
+   声明不了；轮询一个几字节的本地路由代价可以忽略，路由不存在时退避到 15s。
+4. 抬窗口在 Wayland 上是合成器权限，后台进程无法自己做到，所以交给 `focusCommand`。
+   留空表示自动探测：Hyprland 与 Sway 有默认可用的命令，其它桌面只切会话不抬窗口。
 
 ## 传输
 
@@ -69,6 +88,8 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
     expireTimeoutMs: -1
     notifySubagents: false
     notifyOnAbort: false
+    revealOnClick: true
+    focusCommand: ''
 ```
 
 1. `appName`：通知守护显示的应用名。本机 quickshell 的免打扰模式只放行 `notify-send`，
@@ -78,6 +99,11 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
 3. `expireTimeoutMs`：`-1` 交给通知守护决定（本机 quickshell 回落到 5s）。
 4. `previewChars`：`0` 则只显示标题。
 5. `notifyOnAbort`：自己取消的那一轮是否也通知。
+6. `revealOnClick`：`false` 时不挂 action，卡片点了只消失，也不会有 claim 路由被消费。
+7. `focusCommand`：点击后先执行的抬窗口命令。空串 = 按桌面自动选：
+   Hyprland `hyprctl dispatch focuswindow class:deepseek-harness`（同时试 0.56 起的 Lua 形式），
+   Sway `swaymsg [app_id="deepseek-harness"] focus`，其它为空。举个手写的例子：
+   `focusCommand: 'hyprctl dispatch focuswindow class:google-chrome'`。
 
 ## 已知限制
 

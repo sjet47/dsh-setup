@@ -8,7 +8,7 @@
  * @module dsh-notify/dbus
  */
 import { connect, type Socket } from 'node:net'
-import { decodeMessage, encodeMessage, FIELD, MESSAGE_TYPE, signatureOf, type DbusValue } from './marshal.js'
+import { decodeMessage, encodeMessage, FIELD, MESSAGE_TYPE, signatureOf, type DbusValue, type ParsedMessage } from './marshal.js'
 
 /** Where the session bus listens, resolved from the standard environment. */
 export interface BusTarget {
@@ -77,6 +77,10 @@ export class SessionBus {
   private readonly pending = new Map<number, Pending>()
   private opening: Promise<Socket> | undefined
   private closed = false
+  /** Local signal listeners, keyed by `interface.member`. */
+  private readonly listeners = new Map<string, Set<(message: ParsedMessage) => void>>()
+  /** Match rules the bus must know about; re-issued after every reconnect. */
+  private readonly matches = new Set<string>()
 
   /**
    * @param target - bus socket; unresolved addresses disable the client.
@@ -131,6 +135,58 @@ export class SessionBus {
     })
   }
 
+  /**
+   * Subscribe to one signal broadcast on the session bus.
+   *
+   * The first subscriber for a pair installs the bus-side match rule; the
+   * connection is opened lazily so subscribing never fails on its own.
+   * @param interfaceName - interface that emits the signal.
+   * @param member - signal name.
+   * @param listener - called with every matching signal message.
+   * @returns disposer that removes the listener, and the rule once unused.
+   */
+  onSignal(interfaceName: string, member: string, listener: (message: ParsedMessage) => void): () => void {
+    const key = `${interfaceName}.${member}`
+    let set = this.listeners.get(key)
+    const first = set === undefined
+    if (set === undefined) {
+      set = new Set()
+      this.listeners.set(key, set)
+    }
+    set.add(listener)
+    if (first) void this.addMatch(interfaceName, member).catch(() => {})
+    return () => {
+      const current = this.listeners.get(key)
+      if (current === undefined) return
+      current.delete(listener)
+      if (current.size > 0) return
+      this.listeners.delete(key)
+      this.matches.delete(matchRule(interfaceName, member))
+      // Removing the rule is best effort: a dead connection is reset anyway,
+      // and a trailing match rule only costs a few ignored messages.
+      void this.call({
+        destination: 'org.freedesktop.DBus',
+        path: '/org/freedesktop/DBus',
+        interfaceName: 'org.freedesktop.DBus',
+        member: 'RemoveMatch',
+        body: [{ type: 'string', value: matchRule(interfaceName, member) }],
+      }).catch(() => {})
+    }
+  }
+
+  /** Ask the bus to forward one signal to this connection. */
+  private async addMatch(interfaceName: string, member: string): Promise<void> {
+    const rule = matchRule(interfaceName, member)
+    this.matches.add(rule)
+    await this.call({
+      destination: 'org.freedesktop.DBus',
+      path: '/org/freedesktop/DBus',
+      interfaceName: 'org.freedesktop.DBus',
+      member: 'AddMatch',
+      body: [{ type: 'string', value: rule }],
+    })
+  }
+
   /** Shut the client down for good; a failed call, by contrast, reconnects. */
   close(): void {
     this.closed = true
@@ -181,6 +237,17 @@ export class SessionBus {
       interfaceName: 'org.freedesktop.DBus',
       member: 'Hello',
     })
+    // A fresh connection knows no match rules, so every live subscription is
+    // re-registered before signals can be expected again.
+    for (const rule of this.matches) {
+      await this.call({
+        destination: 'org.freedesktop.DBus',
+        path: '/org/freedesktop/DBus',
+        interfaceName: 'org.freedesktop.DBus',
+        member: 'AddMatch',
+        body: [{ type: 'string', value: rule }],
+      })
+    }
     return socket
   }
 
@@ -220,6 +287,10 @@ export class SessionBus {
       }
       if (message === undefined) return
       this.buffer = this.buffer.subarray(message.length)
+      if (message.type === MESSAGE_TYPE.signal) {
+        this.dispatchSignal(message)
+        continue
+      }
       if (message.type !== MESSAGE_TYPE.methodReturn && message.type !== MESSAGE_TYPE.error) continue
       const serial = message.replySerial
       if (serial === undefined) continue
@@ -235,6 +306,25 @@ export class SessionBus {
       }
     }
   }
+
+  /** Fan one signal out to its local listeners, containing listener failures. */
+  private dispatchSignal(message: ParsedMessage): void {
+    if (message.interface === undefined || message.member === undefined) return
+    const set = this.listeners.get(`${message.interface}.${message.member}`)
+    if (set === undefined) return
+    for (const listener of set) {
+      try {
+        listener(message)
+      } catch {
+        // A broken listener must not take down the bus reader for the others.
+      }
+    }
+  }
+}
+
+/** The bus match rule selecting one interface's named signals. */
+function matchRule(interfaceName: string, member: string): string {
+  return `type='signal',interface='${interfaceName}',member='${member}'`
 }
 
 /**

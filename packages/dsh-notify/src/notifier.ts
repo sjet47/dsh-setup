@@ -22,6 +22,13 @@ export interface NotificationRequest {
   readonly urgency?: number
   /** Milliseconds the daemon keeps the notification; -1 uses the daemon default. */
   readonly expireTimeoutMs?: number
+  /**
+   * Action identifier/label pairs, flattened as the daemon wants them.
+   *
+   * A `default` action makes the whole card clickable; daemons without action
+   * support ignore the list and keep the card click-to-dismiss.
+   */
+  readonly actions?: readonly string[]
 }
 
 /** Method address shared by every notification. */
@@ -74,13 +81,39 @@ export class Notifier {
         { type: 'string', value: request.appIcon ?? '' },
         { type: 'string', value: request.summary },
         { type: 'string', value: escapeMarkup(request.body ?? '') },
-        { type: 'string-array', values: [] },
+        { type: 'string-array', values: request.actions ?? [] },
         { type: 'dict', entries: hints },
         { type: 'int32', value: request.expireTimeoutMs ?? -1 },
       ],
     })
     const id = reply[0]
     return typeof id === 'number' ? id : 0
+  }
+
+  /**
+   * Observe clicks on a notification's `default` action.
+   * @param listener - called with the notification id and the invoked action key.
+   * @returns disposer for the subscription.
+   */
+  onActionInvoked(listener: (id: number, action: string) => void): () => void {
+    return this.bus.onSignal('org.freedesktop.Notifications', 'ActionInvoked', (message) => {
+      const [id, action] = message.body
+      if (typeof id !== 'number' || typeof action !== 'string') return
+      listener(id, action)
+    })
+  }
+
+  /**
+   * Observe notifications leaving the screen, so their ids can be forgotten.
+   * @param listener - called with the notification id and the close reason.
+   * @returns disposer for the subscription.
+   */
+  onClosed(listener: (id: number, reason: number) => void): () => void {
+    return this.bus.onSignal('org.freedesktop.Notifications', 'NotificationClosed', (message) => {
+      const [id, reason] = message.body
+      if (typeof id !== 'number' || typeof reason !== 'number') return
+      listener(id, reason)
+    })
   }
 
   /** Shut the client down; used when the plugin unloads. */

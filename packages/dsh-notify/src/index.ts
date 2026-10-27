@@ -10,9 +10,11 @@
  * spoken directly instead of through `notify-send`.
  * @module dsh-notify
  */
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
@@ -38,6 +40,10 @@ export interface Config {
   notifySubagents: boolean
   /** Notify when you cancelled the run yourself. */
   notifyOnAbort: boolean
+  /** Make the notification clickable, revealing its session in every open DSH UI. */
+  revealOnClick: boolean
+  /** Command run to raise the DSH window before revealing; empty auto-detects. */
+  focusCommand: string
 }
 
 export const Config: z<Config> = z.object({
@@ -48,6 +54,8 @@ export const Config: z<Config> = z.object({
   expireTimeoutMs: z.number().default(-1),
   notifySubagents: z.boolean().default(false),
   notifyOnAbort: z.boolean().default(false),
+  revealOnClick: z.boolean().default(true),
+  focusCommand: z.string().default(''),
 })
 
 /**
@@ -114,6 +122,62 @@ function titleOf(ctx: Context, session: Session): string {
   return 'DSH'
 }
 
+/** One JSON response for the claim route; no caching, it is a one-shot read. */
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  })
+}
+
+/**
+ * How long a clicked notification stays claimable by a UI.
+ *
+ * A click is worthless if it lands minutes later on a client that just
+ * opened: the user asked for that session then, not now.
+ */
+const PENDING_TTL_MS = 60_000
+
+/**
+ * Pick the command that raises the DSH window on this desktop.
+ *
+ * Wayland gives a background process no way to raise another window, so this
+ * is delegated to the compositor that owns the policy. Auto-detection covers
+ * the two compositors whose CLI can address the window; every other desktop
+ * keeps the session switch and skips the raise.
+ * @param env - environment to inspect, defaulting to this process's.
+ * @returns a shell command, or `''` when raising is unsupported here.
+ */
+export function detectFocusCommand(env: NodeJS.ProcessEnv = process.env): string {
+  if (env['HYPRLAND_INSTANCE_SIGNATURE'] !== undefined && env['HYPRLAND_INSTANCE_SIGNATURE'] !== '') {
+    // Hyprland 0.56 moved dispatch to Lua; older releases still take the
+    // classic form, which the new one accepts silently without focusing. Run
+    // both: whichever release is installed ignores the other.
+    return [
+      'hyprctl dispatch focuswindow class:deepseek-harness >/dev/null 2>&1',
+      `hyprctl dispatch 'hl.dsp.focus({ window = "class:deepseek-harness" })' >/dev/null 2>&1`,
+    ].join('; ')
+  }
+  if (env['SWAYSOCK'] !== undefined && env['SWAYSOCK'] !== '') {
+    return 'swaymsg [app_id="deepseek-harness"] focus'
+  }
+  return ''
+}
+
+/** Run one fire-and-forget shell command, ignoring both its output and exit. */
+function runDetached(command: string, logger: { warn(message: string): void }): void {
+  if (command === '') return
+  try {
+    // A shell keeps multi-word commands configurable as one string, which is
+    // what a config value has to be.
+    const child = spawn('/bin/sh', ['-c', command], { detached: true, stdio: 'ignore' })
+    child.on('error', (error: Error) => logger.warn(`dsh-notify: focus command failed: ${error.message}`))
+    child.unref()
+  } catch (error) {
+    logger.warn(`dsh-notify: focus command failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 /**
  * Install the notification forwarder.
  * @param ctx - plugin context.
@@ -132,6 +196,11 @@ export function apply(ctx: Context, config: Config = Config()): void {
   }
 
   const notifier = new Notifier(new SessionBus(target))
+  const focusCommand = config.focusCommand !== '' ? config.focusCommand : detectFocusCommand()
+  /** Daemon notification id → the session that posted it, for click routing. */
+  const owners = new Map<number, string>()
+  /** Session a click asked to reveal, until an open UI claims it. */
+  let pending: { sessionId: string; at: number } | undefined
   const states = new Map<string, SessionState>()
   const stateOf = (sessionId: string): SessionState => {
     let state = states.get(sessionId)
@@ -162,15 +231,22 @@ export function apply(ctx: Context, config: Config = Config()): void {
     }
     const icon = config.icon !== '' ? config.icon : DEFAULT_ICON
     try {
-      state.notificationId = await notifier.notify({
+      const previous = state.notificationId
+      const id = await notifier.notify({
         appName: config.appName,
-        replacesId: state.notificationId ?? 0,
+        replacesId: previous ?? 0,
         summary: notice.summary,
         body: notice.body,
         appIcon: icon,
         urgency: notice.urgency,
         expireTimeoutMs: config.expireTimeoutMs,
+        actions: config.revealOnClick ? ['default', 'Open session'] : [],
       })
+      state.notificationId = id
+      // The daemon keeps the id of a replaced notification, so overwrite the
+      // owner rather than accumulating stale ids.
+      if (previous !== undefined) owners.delete(previous)
+      owners.set(id, sessionId)
     } catch (error) {
       ctx.logger.warn(`dsh-notify: cannot post a notification: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
@@ -215,12 +291,61 @@ export function apply(ctx: Context, config: Config = Config()): void {
   })
 
   ctx.on('session/disposed', (session: Session) => {
-    states.delete(String(session.id))
+    const sessionId = String(session.id)
+    const state = states.get(sessionId)
+    if (state?.notificationId !== undefined) owners.delete(state.notificationId)
+    states.delete(sessionId)
+  })
+
+  /** Mirror a click into the UIs: remember the target, then try to raise DSH. */
+  const reveal = (sessionId: string): void => {
+    pending = { sessionId, at: Date.now() }
+    runDetached(focusCommand, ctx.logger)
+  }
+
+  ctx.effect(() => {
+    const offAction = config.revealOnClick
+      ? notifier.onActionInvoked((id, action) => {
+          if (action !== 'default') return
+          const sessionId = owners.get(id)
+          if (sessionId !== undefined) reveal(sessionId)
+        })
+      : () => {}
+    const offClosed = notifier.onClosed((id) => {
+      owners.delete(id)
+    })
+    return () => {
+      offAction()
+      offClosed()
+    }
+  })
+
+  // The click happens on the Host; switching the visible session happens in
+  // the browser. A short claim route is the bridge, and it needs the web
+  // transport, so a profile without it keeps notifications without clicking.
+  ctx.inject(['connection'], (scoped) => {
+    scoped.effect(() =>
+      scoped.connection.fetch.register({
+        path: '/api/dsh-notify/claim',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (): Promise<Response> => {
+          const claim = pending
+          pending = undefined
+          if (claim === undefined || Date.now() - claim.at > PENDING_TTL_MS) {
+            return json({ sessionId: null })
+          }
+          return json({ sessionId: claim.sessionId })
+        },
+      }),
+    )
   })
 
   ctx.effect(() => () => {
     notifier.close()
     states.clear()
+    owners.clear()
+    pending = undefined
   })
 
   ctx.logger.debug(`dsh-notify: listening on ${target.path ?? target.abstract ?? 'the session bus'}`)

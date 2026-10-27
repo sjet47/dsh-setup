@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": ".client-build",
+    "types": [],
+    "noEmitOnError": true
+  },
+  "include": ["src/client.tsx"]
+}
