@@ -41,6 +41,21 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
 选 SVG 的原因是可量化的：同一个 40px 图标槽，quickshell 用 SVG 渲染的边沿锐度（Laplacian
 方差）是 2544，用 256px PNG 是 1768；固定尺寸的位图要被重采样到槽位大小，细节在这一步丢掉了。
 
+### 备选：无底鲸鱼
+
+`icon-whale.svg` 是同一只鲸鱼去掉白色圆角方块、只留深色鲸鱼的版本，默认不用。它在浅色卡片上
+能让鲸鱼撑满槽位（80px 槽位里 72×53，白底版是 56×44），代价是鲸鱼填充近黑，**在深色卡片上会
+看不见**，所以只在通知卡片是浅色主题时适用。要换就把配置指过去：
+
+```yaml
+- id: dsh-notify
+  name: dsh-notify
+  config:
+    icon: /path/to/dsh-notify/icon-whale.svg
+```
+
+它和 `icon.svg` 一样被 `files` 收录，安装后就在包目录里，用 `node_modules` 下的绝对路径即可。
+
 ## 配置
 
 ```yaml

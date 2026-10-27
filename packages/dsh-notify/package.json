@@ -16,6 +16,7 @@
     "README.md",
     "locale/*.json",
     "icon.svg",
+    "icon-whale.svg",
     "icon.png"
   ],
   "license": "MIT",
