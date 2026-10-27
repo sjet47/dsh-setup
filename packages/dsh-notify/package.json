@@ -15,7 +15,8 @@
     "cordis.patch.yml",
     "README.md",
     "locale/*.json",
-    "icon.svg"
+    "icon.svg",
+    "icon.png"
   ],
   "license": "MIT",
   "dsh": {

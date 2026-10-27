@@ -50,8 +50,15 @@ export const Config: z<Config> = z.object({
   notifyOnAbort: z.boolean().default(false),
 })
 
-/** Notification artwork shipped with the package. */
-const DEFAULT_ICON = fileURLToPath(new URL('../icon.svg', import.meta.url))
+/**
+ * Notification artwork shipped with the package.
+ *
+ * The PNG rather than the SVG next to it: the notification daemon renders this
+ * through Qt's image pipeline at roughly 40px and the raster copy is already
+ * sized for a HiDPI card, while the SVG is exported for the plugin inventory,
+ * whose browser scales it to any size.
+ */
+const DEFAULT_ICON = fileURLToPath(new URL('../icon.png', import.meta.url))
 
 /** What this plugin remembers about one session between events. */
 interface SessionState {

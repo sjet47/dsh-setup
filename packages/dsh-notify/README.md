@@ -28,6 +28,15 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
 - 正文做 `& < >` 转义：quickshell 用 `Text.StyledText` 渲染正文，回复里出现 `<T>`、`a < b`
   这类文本时不会被当成标签吃掉。
 
+## 图标
+
+`icon.svg` / `icon.png` 是 DeepSeek 的品牌图标（白色圆角方块里的鲸鱼），取自本机安装的
+`/usr/share/icons/hicolor/scalable/apps/deepseek-harness.svg`，去掉投影滤镜、收紧 `viewBox`
+到方块本身后重新导出；商标归 DeepSeek，这里只用于给自家的 dsh 标识通知来源。
+
+两份格式各有用途：浏览器（Plugins 页的插件清单）用矢量 `icon.svg`，任意尺寸都清晰；通知卡片
+用 `icon.png`（256×256），由 quickshell 的 Qt 图像管线在 40px 处渲染，不依赖 SVG 图像插件。
+
 ## 配置
 
 ```yaml
@@ -45,7 +54,8 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
 
 1. `appName`：通知守护显示的应用名。本机 quickshell 的免打扰模式只放行 `notify-send`，
    想让通知穿透免打扰就把这里改成 `notify-send`。
-2. `icon`：空串用包内 `icon.svg`，也可以给图标主题名。
+2. `icon`：空串用包内 DeepSeek 图标（`icon.png`），也可以给图标主题名（本机有
+   `deepseek-harness`）。
 3. `expireTimeoutMs`：`-1` 交给通知守护决定（本机 quickshell 回落到 5s）。
 4. `previewChars`：`0` 则只显示标题。
 5. `notifyOnAbort`：自己取消的那一轮是否也通知。
