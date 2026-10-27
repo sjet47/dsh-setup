@@ -105,6 +105,15 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
    Sway `swaymsg [app_id="deepseek-harness"] focus`，其它为空。举个手写的例子：
    `focusCommand: 'hyprctl dispatch focuswindow class:google-chrome'`。
 
+## 启动安全
+
+两侧的 `apply` 都包了兜底：内部出错只记一条 warning，不会让插件行停在 `failed`/`pending`。
+
+这不是防御性编程的洁癖 —— 桌面端的 `web boot` 检查会遍历浏览器 loader 的每个 entry，只要有一个没到
+`active` 就抛 `web boot: N entries did not activate`，Electron 主进程视之为致命错误、窗口直接起不来。
+曾经的触发方式：client 半边写 `ctx.sessions`，而 `inject` 只声明了 `uiWorkspace`，Cordis 对未 inject 的
+服务访问立即抛 `cannot get property "sessions" without inject`。**可选服务必须走 `ctx.get(name)`。**
+
 ## 已知限制
 
 1. Host 不知道浏览器当前聚焦在哪个会话，所以正在看的会话跑完也会通知。
