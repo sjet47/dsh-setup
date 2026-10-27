@@ -25,6 +25,19 @@ function loadClient(pageWindow) {
 }
 
 /** Minimal document/window doubles for the wake listeners. */
+/** A catalog that either already lists the session or gains it later. */
+function catalog(ids) {
+  const byId = Object.fromEntries(ids.map((id) => [id, { id }]))
+  return { list: { getSnapshot: () => ({ byId }) } }
+}
+
+/** Let a session appear in the catalog only after `delay` ms. */
+function catalogAfter(sessionId, delay) {
+  const byId = {}
+  setTimeout(() => { byId[sessionId] = { id: sessionId } }, delay)
+  return { list: { getSnapshot: () => ({ byId }) } }
+}
+
 function installDomDoubles() {
   const listeners = new Map()
   const record = (target) => ({
@@ -69,6 +82,7 @@ test('a claimed session is revealed through uiWorkspace.openSession', async () =
     assert.deepEqual(client.inject, ['uiWorkspace'])
     client.apply({
       uiWorkspace: { openSession: (id) => opened.push(id) },
+      sessions: catalog(['session-abc']),
       effect: (run) => effects.push(run()),
     })
     // The first poll runs immediately; give the promise chain one turn.
@@ -90,7 +104,11 @@ test('an idle claim does not switch sessions', async () => {
   const effects = []
   try {
     const client = loadClient(dom.pageWindow)
-    client.apply({ uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) })
+    client.apply({
+      uiWorkspace: { openSession: (id) => opened.push(id) },
+      sessions: catalog([]),
+      effect: (run) => effects.push(run()),
+    })
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(opened, [])
   } finally {
@@ -113,7 +131,11 @@ test('a transport failure keeps the poller alive instead of throwing', async () 
   const effects = []
   try {
     const client = loadClient(dom.pageWindow)
-    client.apply({ uiWorkspace: { openSession: (id) => opened.push(id) }, effect: (run) => effects.push(run()) })
+    client.apply({
+      uiWorkspace: { openSession: (id) => opened.push(id) },
+      sessions: catalog([]),
+      effect: (run) => effects.push(run()),
+    })
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(opened, [])
     assert.equal(attempts, 1)
@@ -134,7 +156,7 @@ test('disposing the plugin stops polling and drops the listeners', async () => {
   }
   const effects = []
   const client = loadClient(dom.pageWindow)
-  client.apply({ uiWorkspace: { openSession: () => {} }, effect: (run) => effects.push(run()) })
+  client.apply({ uiWorkspace: { openSession: () => {} }, sessions: catalog([]), effect: (run) => effects.push(run()) })
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.equal(calls, 1)
   for (const dispose of effects) dispose()
@@ -157,4 +179,29 @@ test('the focus command follows the compositor that can raise a window', () => {
   assert.equal(detectFocusCommand({ SWAYSOCK: '/run/user/1000/sway-ipc.sock' }), 'swaymsg [app_id="deepseek-harness"] focus')
   assert.equal(detectFocusCommand({}), '')
   assert.equal(detectFocusCommand({ HYPRLAND_INSTANCE_SIGNATURE: '' }), '')
+})
+
+test('a session the client does not know yet is opened once it appears', async () => {
+  const dom = installDomDoubles()
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ sessionId: 'session-late' }) })
+  const opened = []
+  const effects = []
+  try {
+    const client = loadClient(dom.pageWindow)
+    client.apply({
+      uiWorkspace: { openSession: (id) => opened.push(id) },
+      // Appears after 500ms, i.e. after the first retry has been scheduled.
+      sessions: catalogAfter('session-late', 500),
+      effect: (run) => effects.push(run()),
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.deepEqual(opened, [], 'must not switch to an id the client cannot resolve')
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    assert.deepEqual(opened, ['session-late'], 'opened exactly once, not once per retry')
+  } finally {
+    for (const dispose of effects) dispose()
+    globalThis.fetch = previousFetch
+    dom.restore()
+  }
 })

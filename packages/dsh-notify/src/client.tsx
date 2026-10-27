@@ -43,32 +43,56 @@ interface WorkspaceCommands {
   openSession(sessionId: string): void
 }
 
+/** The session list, read only to decide whether a reveal can succeed yet. */
+interface SessionCatalog {
+  readonly list?: { getSnapshot(): { byId: Record<string, unknown> } }
+}
+
+/** Whether the client already knows this session, so a reveal can take effect. */
+function known(sessions: SessionCatalog | undefined, sessionId: string): boolean {
+  try {
+    return sessions?.list?.getSnapshot().byId[sessionId] !== undefined
+  } catch {
+    return false
+  }
+}
+
 /**
- * Reveal one session, retrying while the session list catches up.
+ * Reveal one session, waiting for the session list to know it.
  *
  * A click can beat the client's session list — a notification for a session
- * created moments ago, or a client that just reconnected — so the first
- * `openSession` call may have nothing to switch to.
+ * created moments ago, or a client that just reconnected — and switching to an
+ * unknown id does nothing. Switch once the list has it, and retry only while it
+ * does not: repeating `openSession` on a session already shown would fight the
+ * user's own navigation.
  * @param workspace - the workspace command surface.
+ * @param sessions - the session catalog used to tell "not yet" from "ready".
  * @param sessionId - the session the user clicked.
  * @param isDisposed - stops the retry chain when the plugin unloads.
  * @param schedule - timer helper owned by the caller.
+ * @param attempt - retries spent so far.
  */
 function reveal(
   workspace: WorkspaceCommands,
+  sessions: SessionCatalog | undefined,
   sessionId: string,
   isDisposed: () => boolean,
   schedule: (run: () => void, delay: number) => void,
   attempt = 0,
 ): void {
   if (isDisposed()) return
+  // Without a catalog the plugin cannot tell "not yet" from "ready", so it
+  // falls back to the first attempt and lets the host's own restore win.
+  if (sessions !== undefined && !known(sessions, sessionId)) {
+    if (attempt + 1 >= OPEN_ATTEMPTS) return
+    schedule(() => reveal(workspace, sessions, sessionId, isDisposed, schedule, attempt + 1), RETRY_MS)
+    return
+  }
   try {
     workspace.openSession(sessionId)
   } catch {
-    // A session the client cannot resolve yet is retried below.
+    // A rejected switch must not break the poller; the next click retries.
   }
-  if (attempt + 1 >= OPEN_ATTEMPTS) return
-  schedule(() => reveal(workspace, sessionId, isDisposed, schedule, attempt + 1), RETRY_MS)
 }
 
 /**
@@ -76,8 +100,10 @@ function reveal(
  * @param ctx - client plugin context; `uiWorkspace` is injected.
  */
 export function apply(ctx: Context): void {
-  const workspace = (ctx as unknown as { uiWorkspace?: WorkspaceCommands }).uiWorkspace
+  const scoped = ctx as unknown as { uiWorkspace?: WorkspaceCommands; sessions?: SessionCatalog }
+  const workspace = scoped.uiWorkspace
   if (workspace === undefined) return
+  const sessions = scoped.sessions
 
   let disposed = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -102,7 +128,7 @@ export function apply(ctx: Context): void {
         const value: unknown = await response.json()
         const sessionId = (value as { sessionId?: unknown }).sessionId
         if (typeof sessionId === 'string' && sessionId !== '') {
-          reveal(workspace, sessionId, () => disposed, schedule)
+          reveal(workspace, sessions, sessionId, () => disposed, schedule)
         }
         delay = POLL_MS
       } else {
