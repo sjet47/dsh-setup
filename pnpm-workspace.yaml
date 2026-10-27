@@ -1,5 +1,8 @@
 packages:
   - "packages/*"
 
-onlyBuiltDependencies:
-  - esbuild
+# pnpm 12 reads `allowBuilds` here; the older `onlyBuiltDependencies` key and
+# the `pnpm` field in package.json are no longer read. esbuild's install script
+# only links its prebuilt binary, and `pnpm build` needs it.
+allowBuilds:
+  esbuild: true

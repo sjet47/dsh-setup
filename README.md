@@ -10,6 +10,7 @@ Personal [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plu
 | 2 | [`dsh-wakatime`](packages/dsh-wakatime/README.md) | WakaTime heartbeats for sessions, tools and AI line changes | `pi-wakatime` |
 | 3 | [`dsh-note`](packages/dsh-note/README.md) | Project memory **shared with pi-note** + per-session scratchpad + memory browser | `pi-note` |
 | 4 | [`dsh-recap`](packages/dsh-recap/README.md) | One-line session recap on demand, on resume, or after five idle minutes | `pi-recap` |
+| 5 | [`dsh-mermaid`](packages/dsh-mermaid/README.md) | Draw the Mermaid diagrams in a Chat message in a frame-wide viewer | Alma |
 
 Every package ships the display resources the Plugins page reads without activating the plugin — `locale/en.json` + `locale/zh.json` (`meta.title`, `meta.description`) and `icon.svg` — and exports `Config` for its tunables, plus client copy registered through `@deepseek-ai/dsh-client-locale` so the UI follows Settings → Language.
 
@@ -30,7 +31,7 @@ pnpm test            # node:test against built output
 pnpm run smoke       # render each client bundle's slots in Node
 ```
 
-A package with a browser half compiles `src/client.tsx` to CommonJS and wraps it in the dsh module-loader frame at `lib/client.js`; `package.json`'s `dsh.client` then makes the Host serve it. A client-only slot that a standalone bundle cannot depend on (such as `shell.overlay`, declared by `dsh-client-ui-layout`) is mirrored in `types/*.d.ts` as a module augmentation for the client build.
+A package with a browser half compiles `src/client.tsx` to CommonJS and wraps it in the dsh module-loader frame at `lib/client.js`; `package.json`'s `dsh.client` then makes the Host serve it. A client that imports more than one module goes through esbuild instead (listed in `BUNDLED_CLIENTS` in `scripts/build.mjs`): the module loader's `require` resolves package names only, so a relative import between compiled client files would not load, while `react` and the other platform baseline modules stay external. A client-only slot that a standalone bundle cannot depend on (such as `shell.overlay`, declared by `dsh-client-ui-layout`) is mirrored in `types/*.d.ts` as a module augmentation for the client build.
 
 ## dsh compatibility
 

@@ -1,0 +1,5 @@
+# dsh-mermaid bundle patch: the Host renders diagrams; the browser action and
+# viewer are declared through package.json `dsh.client`.
+- insert:
+    - id: dsh-mermaid
+      name: dsh-mermaid

@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "types": [],
+    "noEmitOnError": true
+  },
+  "include": ["src/client.tsx", "types/overlay.d.ts"]
+}

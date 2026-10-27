@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "title": "Mermaid Diagrams",
+    "description": "Draw the Mermaid diagrams written in Chat messages in a frame-wide viewer."
+  },
+  "action": {
+    "label": "Diagrams",
+    "title": "View the Mermaid diagrams in this message"
+  },
+  "panel": {
+    "title": "Diagrams",
+    "subtitle": "{count} in this message",
+    "close": "Close",
+    "loading": "Drawing…",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "reset": "Reset view",
+    "fit": "Fit",
+    "source": "Source",
+    "preview": "Preview",
+    "copy": "Copy source",
+    "copied": "Copied",
+    "download": "Download SVG",
+    "failed": "Could not draw this diagram",
+    "requestFailed": "The renderer did not answer ({status})",
+    "unsupported": "Unsupported diagram type",
+    "diagram": "Diagram {index}"
+  }
+}

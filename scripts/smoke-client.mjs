@@ -36,8 +36,32 @@ const standardProps = {
   useSessionStatus: (selector) => selector({ get: () => ({ running: false }) }),
 }
 
+/** Every package that ships a browser half. */
+const PACKAGES = ['dsh-mr', 'dsh-note', 'dsh-recap', 'dsh-mermaid']
+
+/** A Chat publication with one Mermaid-bearing answer, so actions render. */
+const chatWithDiagram = {
+  order: ['assistant-1'],
+  nodes: {
+    get(key) {
+      if (key !== 'assistant-1') return undefined
+      return {
+        kind: 'assistant-step',
+        data: {
+          status: 'settled',
+          turn: 1,
+          step: 1,
+          time: 0,
+          blocks: [{ kind: 'text', text: '```mermaid\ngraph TD\n  A --> B\n```' }],
+          finalNode: { messageId: 'message-1' },
+        },
+      }
+    },
+  },
+}
+
 const results = []
-for (const pkg of ['dsh-mr', 'dsh-note', 'dsh-recap']) {
+for (const pkg of PACKAGES) {
   let loaded
   const fakeWindow = {
     __ModuleLoader__: {
@@ -75,6 +99,11 @@ for (const pkg of ['dsh-mr', 'dsh-note', 'dsh-recap']) {
   /** Keyed slots take `key`; render their page view, not the summary. */
   const propsFor = (options) => ({
     ...standardProps,
+    // An assistant-actions entry receives the durable message id and reads the
+    // answer through `useChat`; supply both so the action's fence scan runs.
+    ...(options.name === 'conversation.chat.assistant-actions'
+      ? { messageId: 'message-1', useChat: (selector) => selector(chatWithDiagram) }
+      : {}),
     ...(options.name === 'plugins.bundle.config' ? { view: 'page' } : {}),
   })
   let htmlLength = 0

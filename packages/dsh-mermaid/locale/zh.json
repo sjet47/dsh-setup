@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "title": "Mermaid 图表",
+    "description": "把 Chat 消息里的 Mermaid 图渲染到全窗口查看器里。"
+  },
+  "action": {
+    "label": "图表",
+    "title": "查看这条消息里的 Mermaid 图"
+  },
+  "panel": {
+    "title": "图表",
+    "subtitle": "本消息 {count} 张",
+    "close": "关闭",
+    "loading": "绘制中…",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "reset": "重置视图",
+    "fit": "适应窗口",
+    "source": "源码",
+    "preview": "预览",
+    "copy": "复制源码",
+    "copied": "已复制",
+    "download": "下载 SVG",
+    "failed": "这张图没能画出来",
+    "requestFailed": "渲染器没有响应（{status}）",
+    "unsupported": "暂不支持该图表类型",
+    "diagram": "第 {index} 张"
+  }
+}
