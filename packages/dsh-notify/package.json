@@ -1,0 +1,33 @@
+{
+  "name": "dsh-notify",
+  "version": "0.1.0",
+  "description": "Desktop notifications when a dsh session finishes answering, posted over the D-Bus session bus",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": "^0.2.1-rc.3"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5"
+  }
+}

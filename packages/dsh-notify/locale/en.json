@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Notifications",
+    "description": "Posts a desktop notification over D-Bus when a session finishes answering."
+  }
+}
