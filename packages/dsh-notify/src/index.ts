@@ -53,12 +53,14 @@ export const Config: z<Config> = z.object({
 /**
  * Notification artwork shipped with the package.
  *
- * The PNG rather than the SVG next to it: the notification daemon renders this
- * through Qt's image pipeline at roughly 40px and the raster copy is already
- * sized for a HiDPI card, while the SVG is exported for the plugin inventory,
- * whose browser scales it to any size.
+ * The SVG rather than the PNG beside it: the daemon rasterizes an SVG at the
+ * exact logical size it needs, while a fixed-size PNG is resampled down and
+ * loses detail at the card's 40px icon slot. Measured on quickshell, the same
+ * slot scores a Laplacian variance of 2544 from the SVG against 1768 from the
+ * 256px PNG. `icon.png` stays in the package for daemons built without SVG
+ * image support; point `icon` at it in that case.
  */
-const DEFAULT_ICON = fileURLToPath(new URL('../icon.png', import.meta.url))
+const DEFAULT_ICON = fileURLToPath(new URL('../icon.svg', import.meta.url))
 
 /** What this plugin remembers about one session between events. */
 interface SessionState {
