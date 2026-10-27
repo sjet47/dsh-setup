@@ -16,6 +16,23 @@
 6. urgency 固定为 normal：quickshell 的 critical 通知不会自动消失，对「回答好了」这种日常提示
    不合适。
 7. 通知带一个 `default` action，所以整张卡片可点。点一下 = 切到那条会话（见下面「点击跳转」）。
+8. 如果你正看着那条会话（页面可见、窗口有焦点、主视图就是它），**不发通知** —— 答案已经在你眼前了。
+
+## 什么时候不该打扰
+
+Host 知道「谁跑完了」，但「你在看哪条」只有浏览器知道，所以由客户端上报：
+
+1. 客户端每轮轮询前先 `POST /api/dsh-notify/presence`，内容是 `{ sessionId, active }`；
+   `sessionId` 取「主视图 retain 的那条」（`retainedBy.mainView > 0`，侧边栏标当前行用的是同一个事实），
+   `active` 是「页面可见 且 窗口有焦点」。
+2. `visibilitychange` 与 `blur` 时立刻再报一次：用户一停止观看，Host 就该立刻恢复通知，不用等下一个 tick。
+3. Host 只在 running→idle 那一刻读最新报告，三个条件全满才静默：报告未过期（8s）、`active`、会话就是它。
+   任一未知都照常通知 —— 多弹一条的代价远小于该弹没弹。
+
+TTL 存在的原因：关掉的标签页会把它最后一条报告留在 Host 里，如果一直当真，之后所有通知都会被吞掉。
+
+配置 `skipWhenFocused: false` 可以关掉这个行为。
+
 
 ## 点击跳转
 
@@ -90,6 +107,7 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
     notifyOnAbort: false
     revealOnClick: true
     focusCommand: ''
+    skipWhenFocused: true
 ```
 
 1. `appName`：通知守护显示的应用名。本机 quickshell 的免打扰模式只放行 `notify-send`，
@@ -100,7 +118,8 @@ Notify 的参数。只实现了 Linux/unix socket；`process.platform` 不是 `l
 4. `previewChars`：`0` 则只显示标题。
 5. `notifyOnAbort`：自己取消的那一轮是否也通知。
 6. `revealOnClick`：`false` 时不挂 action，卡片点了只消失，也不会有 claim 路由被消费。
-7. `focusCommand`：点击后先执行的抬窗口命令。空串 = 按桌面自动选：
+7. `skipWhenFocused`：`false` 时即使你正看着那条会话也弹通知。
+8. `focusCommand`：点击后先执行的抬窗口命令。空串 = 按桌面自动选：
    Hyprland `hyprctl dispatch focuswindow class:deepseek-harness`（同时试 0.56 起的 Lua 形式），
    Sway `swaymsg [app_id="deepseek-harness"] focus`，其它为空。举个手写的例子：
    `focusCommand: 'hyprctl dispatch focuswindow class:google-chrome'`。

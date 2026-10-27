@@ -53,9 +53,23 @@ function clientCtx(injected, services = {}) {
   return ctx
 }
 
-/** A catalog that either already lists the session or gains it later. */
+/**
+ * A catalog that already lists every id, with the last one on screen.
+ *
+ * The main view is the row the client retains for `mainView`, which is the same
+ * fact the sidebar uses to mark the current row.
+ */
 function catalog(ids) {
-  const byId = Object.fromEntries(ids.map((id) => [id, { id }]))
+  const byId = Object.fromEntries(ids.map((id, index) => [
+    id,
+    { id, retainedBy: { mainView: index === ids.length - 1 ? 1 : 0 } },
+  ]))
+  return { list: { getSnapshot: () => ({ byId }) } }
+}
+
+/** A catalog where no session is on screen. */
+function noMainView(ids) {
+  const byId = Object.fromEntries(ids.map((id) => [id, { id, retainedBy: { mainView: 0 } }]))
   return { list: { getSnapshot: () => ({ byId }) } }
 }
 
@@ -95,14 +109,36 @@ function installDomDoubles() {
   }
 }
 
+/**
+ * Install a fetch double that answers by path.
+ *
+ * Each poll tick posts presence and then asks for a claim, so a single
+ * catch-all double cannot tell the two apart — nor could it reproduce the bug
+ * where presence was never reported at all.
+ * @param claim - value the claim route returns.
+ * @returns the recorded calls and a restore function.
+ */
+function installFetch(claim) {
+  const calls = []
+  const previous = globalThis.fetch
+  globalThis.fetch = async (path, init) => {
+    calls.push({ path, method: init?.method, body: init?.body })
+    if (path === '/api/dsh-notify/presence') return { ok: true, json: async () => ({ ok: true }) }
+    return { ok: true, json: async () => claim }
+  }
+  return {
+    calls,
+    claims: () => calls.filter((call) => call.path === '/api/dsh-notify/claim'),
+    presences: () => calls.filter((call) => call.path === '/api/dsh-notify/presence'),
+    restore() {
+      globalThis.fetch = previous
+    },
+  }
+}
+
 test('a claimed session is revealed through uiWorkspace.openSession', async () => {
   const dom = installDomDoubles()
-  const previousFetch = globalThis.fetch
-  const claims = []
-  globalThis.fetch = async (path, init) => {
-    claims.push({ path, method: init.method })
-    return { ok: true, json: async () => ({ sessionId: 'session-abc' }) }
-  }
+  const net = installFetch({ sessionId: 'session-abc' })
   const opened = []
   const effects = []
   try {
@@ -114,19 +150,42 @@ test('a claimed session is revealed through uiWorkspace.openSession', async () =
     ))
     // The first poll runs immediately; give the promise chain one turn.
     await new Promise((resolve) => setTimeout(resolve, 10))
-    assert.deepEqual(claims[0], { path: '/api/dsh-notify/claim', method: 'POST' })
+    assert.deepEqual(net.claims()[0], { path: '/api/dsh-notify/claim', method: 'POST', body: undefined })
     assert.deepEqual(opened, ['session-abc'])
   } finally {
     for (const dispose of effects) dispose()
-    globalThis.fetch = previousFetch
+    net.restore()
+    dom.restore()
+  }
+})
+
+test('each tick reports what this page shows before asking for a claim', async () => {
+  const dom = installDomDoubles()
+  const net = installFetch({ sessionId: null })
+  const effects = []
+  try {
+    const client = loadClient(dom.pageWindow)
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: () => {} }, effect: (run) => effects.push(run()) },
+      { sessions: catalog(['session-shown']) },
+    ))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(net.presences().length, 1)
+    assert.deepEqual(JSON.parse(net.presences()[0].body), { sessionId: 'session-shown', active: true })
+    // Presence first, then the claim: the Host must never judge a run against
+    // a stale report it has not received yet.
+    assert.equal(net.calls[0].path, '/api/dsh-notify/presence')
+    assert.equal(net.calls[1].path, '/api/dsh-notify/claim')
+  } finally {
+    for (const dispose of effects) dispose()
+    net.restore()
     dom.restore()
   }
 })
 
 test('an idle claim does not switch sessions', async () => {
   const dom = installDomDoubles()
-  const previousFetch = globalThis.fetch
-  globalThis.fetch = async () => ({ ok: true, json: async () => ({ sessionId: null }) })
+  const net = installFetch({ sessionId: null })
   const opened = []
   const effects = []
   try {
@@ -139,7 +198,7 @@ test('an idle claim does not switch sessions', async () => {
     assert.deepEqual(opened, [])
   } finally {
     for (const dispose of effects) dispose()
-    globalThis.fetch = previousFetch
+    net.restore()
     dom.restore()
   }
 })
@@ -147,11 +206,12 @@ test('an idle claim does not switch sessions', async () => {
 test('a transport failure keeps the poller alive instead of throwing', async () => {
   const dom = installDomDoubles()
   const previousFetch = globalThis.fetch
-  let attempts = 0
-  globalThis.fetch = async () => {
-    attempts += 1
-    if (attempts === 1) throw new Error('host restarting')
-    return { ok: true, json: async () => ({ sessionId: 'session-late' }) }
+  let claims = 0
+  globalThis.fetch = async (path) => {
+    // Presence is best effort and must not mask a claim failure.
+    if (path === '/api/dsh-notify/presence') return { ok: true, json: async () => ({ ok: true }) }
+    claims += 1
+    throw new Error('host restarting')
   }
   const opened = []
   const effects = []
@@ -163,7 +223,7 @@ test('a transport failure keeps the poller alive instead of throwing', async () 
     ))
     await new Promise((resolve) => setTimeout(resolve, 10))
     assert.deepEqual(opened, [])
-    assert.equal(attempts, 1)
+    assert.equal(claims, 1, 'the claim was attempted, and its failure was contained')
   } finally {
     for (const dispose of effects) dispose()
     globalThis.fetch = previousFetch
@@ -173,12 +233,7 @@ test('a transport failure keeps the poller alive instead of throwing', async () 
 
 test('disposing the plugin stops polling and drops the listeners', async () => {
   const dom = installDomDoubles()
-  const previousFetch = globalThis.fetch
-  let calls = 0
-  globalThis.fetch = async () => {
-    calls += 1
-    return { ok: true, json: async () => ({ sessionId: null }) }
-  }
+  const net = installFetch({ sessionId: null })
   const effects = []
   const client = loadClient(dom.pageWindow)
   client.apply(clientCtx(
@@ -186,15 +241,14 @@ test('disposing the plugin stops polling and drops the listeners', async () => {
     { sessions: catalog([]) },
   ))
   await new Promise((resolve) => setTimeout(resolve, 10))
-  assert.equal(calls, 1)
+  assert.equal(net.claims().length, 1)
   for (const dispose of effects) dispose()
-  const before = calls
-  dom.listeners.clear()
+  const before = net.claims().length
   await new Promise((resolve) => setTimeout(resolve, 50))
-  assert.equal(calls, before, 'no poll may run after disposal')
+  assert.equal(net.claims().length, before, 'no poll may run after disposal')
   assert.equal((dom.listeners.get('document:visibilitychange') ?? []).length, 0)
   assert.equal((dom.listeners.get('window:focus') ?? []).length, 0)
-  globalThis.fetch = previousFetch
+  net.restore()
   dom.restore()
 })
 
@@ -211,8 +265,7 @@ test('the focus command follows the compositor that can raise a window', () => {
 
 test('a session the client does not know yet is opened once it appears', async () => {
   const dom = installDomDoubles()
-  const previousFetch = globalThis.fetch
-  globalThis.fetch = async () => ({ ok: true, json: async () => ({ sessionId: 'session-late' }) })
+  const net = installFetch({ sessionId: 'session-late' })
   const opened = []
   const effects = []
   try {
@@ -228,17 +281,16 @@ test('a session the client does not know yet is opened once it appears', async (
     assert.deepEqual(opened, ['session-late'], 'opened exactly once, not once per retry')
   } finally {
     for (const dispose of effects) dispose()
-    globalThis.fetch = previousFetch
+    net.restore()
     dom.restore()
   }
 })
 
 test('an undeclared service read would crash the page, and the plugin never does one', async () => {
   const dom = installDomDoubles()
-  const previousFetch = globalThis.fetch
+  const net = installFetch({ sessionId: 'session-x' })
   const warnings = []
   const previousWarn = console.warn
-  globalThis.fetch = async () => ({ ok: true, json: async () => ({ sessionId: 'session-x' }) })
   console.warn = (...args) => warnings.push(args.join(' '))
   const opened = []
   const effects = []
@@ -256,7 +308,7 @@ test('an undeclared service read would crash the page, and the plugin never does
   } finally {
     for (const dispose of effects) dispose()
     console.warn = previousWarn
-    globalThis.fetch = previousFetch
+    net.restore()
     dom.restore()
   }
 })
@@ -283,4 +335,28 @@ test('a throwing context degrades to a warning instead of failing the entry', ()
     console.warn = previousWarn
     dom.restore()
   }
+})
+
+test('presence names the session the main view retains, and never guesses', () => {
+  const { presenceOf } = loadClient(installDomDoubles().pageWindow)
+  // The last id is the one catalog() marks as the main view.
+  assert.equal(presenceOf(catalog(['a', 'b'])).sessionId, 'b')
+  assert.equal(presenceOf(noMainView(['a', 'b'])).sessionId, null)
+  // A composition without the catalog reports "unknown", which notifies.
+  assert.equal(presenceOf(undefined).sessionId, null)
+  // An unreadable catalog must not throw.
+  const hostile = { list: { getSnapshot() { throw new Error('boom') } } }
+  assert.equal(presenceOf(hostile).sessionId, null)
+})
+
+test('presence is active only when the page is visible and focused', () => {
+  const dom = installDomDoubles()
+  const { presenceOf } = loadClient(dom.pageWindow)
+  assert.equal(presenceOf(catalog(['a'])).active, true)
+  globalThis.document.visibilityState = 'hidden'
+  assert.equal(presenceOf(catalog(['a'])).active, false)
+  globalThis.document.visibilityState = 'visible'
+  globalThis.document.hasFocus = () => false
+  assert.equal(presenceOf(catalog(['a'])).active, false)
+  dom.restore()
 })

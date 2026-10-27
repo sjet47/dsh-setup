@@ -20,6 +20,7 @@ import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { resolveBusTarget, SessionBus } from './dbus.js'
 import { Notifier } from './notifier.js'
+import { watchingSession, type PresenceReport } from './presence.js'
 import { completionNotice, type CompletionReason } from './summary.js'
 
 export const name = 'notify'
@@ -44,6 +45,8 @@ export interface Config {
   revealOnClick: boolean
   /** Command run to raise the DSH window before revealing; empty auto-detects. */
   focusCommand: string
+  /** Skip the notification when a focused DSH page already shows that session. */
+  skipWhenFocused: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -56,6 +59,7 @@ export const Config: z<Config> = z.object({
   notifyOnAbort: z.boolean().default(false),
   revealOnClick: z.boolean().default(true),
   focusCommand: z.string().default(''),
+  skipWhenFocused: z.boolean().default(true),
 })
 
 /**
@@ -139,6 +143,15 @@ function json(body: unknown, status = 200): Response {
 const PENDING_TTL_MS = 60_000
 
 /**
+ * How long one presence report stays trustworthy.
+ *
+ * The browser re-reports on every poll tick and immediately when the page
+ * hides or loses focus, so an expired report means the tab is gone rather than
+ * slow.
+ */
+const PRESENCE_TTL_MS = 8_000
+
+/**
  * Pick the command that raises the DSH window on this desktop.
  *
  * Wayland gives a background process no way to raise another window, so this
@@ -218,6 +231,8 @@ function install(ctx: Context, config: Config): void {
   const owners = new Map<number, string>()
   /** Session a click asked to reveal, until an open UI claims it. */
   let pending: { sessionId: string; at: number } | undefined
+  /** The newest browser presence report, used to stay quiet while watched. */
+  let presence: PresenceReport | undefined
   const states = new Map<string, SessionState>()
   const stateOf = (sessionId: string): SessionState => {
     let state = states.get(sessionId)
@@ -242,6 +257,14 @@ function install(ctx: Context, config: Config): void {
       notifyOnAbort: config.notifyOnAbort,
     })
     if (notice === undefined) {
+      state.reason = undefined
+      state.errorMessage = undefined
+      return
+    }
+    // Nothing to announce when the answer is already on screen: the user is
+    // reading it while it arrives.
+    if (config.skipWhenFocused && watchingSession(presence, sessionId, Date.now(), PRESENCE_TTL_MS)) {
+      ctx.logger.debug(`dsh-notify: staying quiet, ${sessionId} is on screen`)
       state.reason = undefined
       state.errorMessage = undefined
       return
@@ -353,6 +376,32 @@ function install(ctx: Context, config: Config): void {
             return json({ sessionId: null })
           }
           return json({ sessionId: claim.sessionId })
+        },
+      }),
+    )
+
+    // A page states what it is looking at; the Host only reads it to decide
+    // whether a finished run is already on screen.
+    scoped.effect(() =>
+      scoped.connection.fetch.register({
+        path: '/api/dsh-notify/presence',
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: async (request: Request): Promise<Response> => {
+          let body: unknown
+          try {
+            body = await request.json()
+          } catch {
+            return json({ ok: false }, 400)
+          }
+          const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+          const sessionId = record['sessionId']
+          presence = {
+            sessionId: typeof sessionId === 'string' && sessionId !== '' ? sessionId : null,
+            active: record['active'] === true,
+            at: Date.now(),
+          }
+          return json({ ok: true })
         },
       }),
     )

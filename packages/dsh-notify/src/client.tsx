@@ -20,6 +20,9 @@ export const inject = ['uiWorkspace'] as const
 /** The one shot claim route registered by the Host half. */
 const CLAIM_PATH = '/api/dsh-notify/claim'
 
+/** The route that tells the Host what this page is showing. */
+const PRESENCE_PATH = '/api/dsh-notify/presence'
+
 /** Poll cadence; the payload is a few bytes and the route is one-shot. */
 const POLL_MS = 2000
 
@@ -43,9 +46,54 @@ interface WorkspaceCommands {
   openSession(sessionId: string): void
 }
 
-/** The session list, read only to decide whether a reveal can succeed yet. */
+/** One row of the session list, as far as this plugin reads it. */
+interface SessionRow {
+  readonly id?: string
+  /** Local reference counts; `mainView` marks the session on screen. */
+  readonly retainedBy?: { readonly mainView?: number }
+}
+
+/** The session list, read for two narrow questions and nothing else. */
 interface SessionCatalog {
-  readonly list?: { getSnapshot(): { byId: Record<string, unknown> } }
+  readonly list?: { getSnapshot(): { byId: Record<string, SessionRow | undefined> } }
+}
+
+/** What this page reports to the Host, and what it means. */
+interface Presence {
+  /** Session in the main view, or null when the page shows none. */
+  readonly sessionId: string | null
+  /** Whether the page is visible and its window focused. */
+  readonly active: boolean
+}
+
+/**
+ * Derive this page's presence.
+ *
+ * The main view is the session the client retains for `mainView` — the same
+ * fact the sidebar uses to decide which row is current. Both questions are
+ * answered defensively: a missing catalog or an unusual DOM yields "not
+ * watching", which notifies rather than staying silent.
+ * @param sessions - the session catalog, when the composition provides it.
+ * @returns the presence to report.
+ */
+export function presenceOf(sessions: SessionCatalog | undefined): Presence {
+  let sessionId: string | null = null
+  try {
+    const byId = sessions?.list?.getSnapshot().byId ?? {}
+    for (const row of Object.values(byId)) {
+      if (row === undefined || typeof row.id !== 'string') continue
+      if ((row.retainedBy?.mainView ?? 0) > 0) {
+        sessionId = row.id
+        break
+      }
+    }
+  } catch {
+    // An unreadable catalog means "unknown", and unknown notifies.
+  }
+  const page = typeof document === 'undefined' ? undefined : document
+  const visible = page === undefined || page.visibilityState === 'visible'
+  const focused = page === undefined || typeof page.hasFocus !== 'function' || page.hasFocus()
+  return { sessionId, active: visible && focused }
 }
 
 /** Whether the client already knows this session, so a reveal can take effect. */
@@ -127,12 +175,47 @@ function start(ctx: Context): void {
   const sessions = scoped.get?.('sessions') as SessionCatalog | undefined
 
   let disposed = false
-  let timer: ReturnType<typeof setTimeout> | undefined
   let polling = false
+  /**
+   * Every pending timer.
+   *
+   * The claim poller and a reveal's retry chain schedule independently, so one
+   * shared handle would lose whichever was set first and leave it running after
+   * the plugin unloads.
+   */
+  const timers = new Set<ReturnType<typeof setTimeout>>()
 
   const schedule = (run: () => void, delay: number): void => {
     if (disposed) return
-    timer = setTimeout(run, delay)
+    const timer = setTimeout(() => {
+      timers.delete(timer)
+      run()
+    }, delay)
+    timers.add(timer)
+  }
+
+  const clearTimers = (): void => {
+    for (const timer of timers) clearTimeout(timer)
+    timers.clear()
+  }
+
+  /**
+   * Tell the Host what this page shows.
+   *
+   * Fire and forget: the Host only uses the newest report to decide whether a
+   * finished run is already on screen, so a lost one costs one notification.
+   */
+  const reportPresence = async (): Promise<void> => {
+    try {
+      await fetch(PRESENCE_PATH, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify(presenceOf(sessions)),
+      })
+    } catch {
+      // The Host may be restarting; the next tick reports again.
+    }
   }
 
   const poll = async (): Promise<void> => {
@@ -140,6 +223,9 @@ function start(ctx: Context): void {
     polling = true
     let delay = POLL_MS
     try {
+      // Report before asking for a claim: the Host then holds a fresh view of
+      // this page even on the first tick after it opened.
+      void reportPresence()
       const response = await fetch(CLAIM_PATH, {
         method: 'POST',
         credentials: 'same-origin',
@@ -170,18 +256,28 @@ function start(ctx: Context): void {
   // were throttled, so coming back into view is worth an immediate poll.
   const onWake = (): void => {
     if (document.visibilityState !== 'visible') return
-    if (timer !== undefined) clearTimeout(timer)
+    clearTimers()
     void poll()
   }
 
+  // Losing the page is time-critical in the other direction: the user stopped
+  // watching, so the Host must stop staying quiet without waiting for a tick.
+  const onLeave = (): void => {
+    void reportPresence()
+  }
+
   document.addEventListener('visibilitychange', onWake)
+  document.addEventListener('visibilitychange', onLeave)
   window.addEventListener('focus', onWake)
+  window.addEventListener('blur', onLeave)
   void poll()
 
   ctx.effect(() => () => {
     disposed = true
-    if (timer !== undefined) clearTimeout(timer)
+    clearTimers()
     document.removeEventListener('visibilitychange', onWake)
+    document.removeEventListener('visibilitychange', onLeave)
     window.removeEventListener('focus', onWake)
+    window.removeEventListener('blur', onLeave)
   })
 }

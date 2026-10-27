@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { resolveBusTarget } from '../lib/dbus.js'
 import { decodeMessage, encodeMessage, FIELD, MESSAGE_TYPE, signatureOf } from '../lib/marshal.js'
 import { escapeMarkup } from '../lib/notifier.js'
+import { watchingSession } from '../lib/presence.js'
 import { collapsePreview, completionNotice } from '../lib/summary.js'
 
 /** Encode one `Notify` call exactly as the notifier does. */
@@ -152,4 +153,27 @@ test('an untitled session falls back to DSH', () => {
 test('markup in a reply is escaped for markup-capable daemons', () => {
   assert.equal(escapeMarkup('a < b && c > d'), 'a &lt; b &amp;&amp; c &gt; d')
   assert.equal(escapeMarkup('plain'), 'plain')
+})
+
+test('a finished run stays quiet only while it is on a focused screen', () => {
+  const now = 1_000_000
+  const ttl = 8_000
+  const watching = { sessionId: 's1', active: true, at: now - 1_000 }
+  assert.equal(watchingSession(watching, 's1', now, ttl), true)
+  // A closed tab leaves its last report behind; it must not silence anything.
+  assert.equal(watchingSession(watching, 's1', now + ttl + 1, ttl), false)
+  // The user switched away, or another window has focus.
+  assert.equal(watchingSession({ ...watching, active: false }, 's1', now, ttl), false)
+  // A different session finished.
+  assert.equal(watchingSession(watching, 's2', now, ttl), false)
+  // No page is attached at all.
+  assert.equal(watchingSession({ sessionId: null, active: true, at: now }, 's1', now, ttl), false)
+  assert.equal(watchingSession(undefined, 's1', now, ttl), false)
+})
+
+test('the report is trusted up to and including its ttl', () => {
+  const now = 1_000_000
+  const report = { sessionId: 's1', active: true, at: now - 8_000 }
+  assert.equal(watchingSession(report, 's1', now, 8_000), true)
+  assert.equal(watchingSession(report, 's1', now + 1, 8_000), false)
 })
