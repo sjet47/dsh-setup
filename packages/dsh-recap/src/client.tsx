@@ -43,7 +43,7 @@ const EN: Record<string, string> = {
   'panel.autoIdle': 'Generates automatically after {minutes} min idle',
   'panel.failed': 'Recap generation failed.',
   'panel.updateFailed': 'Could not update the recap.',
-  'config.title': 'Recap model',
+  'config.title': 'Recap',
   'config.description': 'Which model writes the one-line recap. While unpinned, each Session uses its own model route.',
   'config.provider': 'Provider',
   'config.model': 'Model',
@@ -57,6 +57,9 @@ const EN: Record<string, string> = {
   'config.noModels': 'This provider advertises no models.',
   'config.saveFailed': 'Could not save: {reason}',
   'config.refresh': 'Refresh the model list',
+  'config.refreshStale': 'Refresh a stale recap automatically',
+  'config.refreshStaleHint':
+    'When the session idles, regenerate a visible recap that the log has moved past instead of leaving it marked stale. A dismissed recap is never restored.',
 }
 const ZH: Record<string, string> = {
   'action.label': '摘要',
@@ -77,7 +80,7 @@ const ZH: Record<string, string> = {
   'panel.autoIdle': '闲置 {minutes} 分钟后自动生成',
   'panel.failed': '生成摘要失败。',
   'panel.updateFailed': '无法更新摘要。',
-  'config.title': '摘要模型',
+  'config.title': '摘要',
   'config.description': '用哪个模型生成一行摘要。不指定时，每个会话沿用自己当前的模型。',
   'config.provider': '提供方',
   'config.model': '模型',
@@ -90,6 +93,9 @@ const ZH: Record<string, string> = {
   'config.loadFailed': '读取模型列表失败：{reason}',
   'config.noModels': '该提供方没有公布任何模型。',
   'config.saveFailed': '保存失败：{reason}',
+  'config.refreshStale': '自动刷新已过期的摘要',
+  'config.refreshStaleHint':
+    '会话空闲时，如果卡片已过期就重新生成，而不是一直挂着「已过期」。被你关掉的摘要不会被重新恢复。',
   'config.refresh': '刷新模型列表',
 }
 
@@ -620,11 +626,17 @@ interface ModelCatalog {
   providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string }>; error?: string }>
 }
 
+/** Wire shape of GET `/api/dsh-recap/preferences`. */
+interface Preferences {
+  refreshStale: boolean
+}
+
 /**
  * The bundle's own configuration section on its Plugins page: pick the model
- * that writes recaps, or clear the pin so each Session follows its own route.
- * The Host owns the stored pin and the provider catalog; this view only reads
- * and writes them through the authenticated routes.
+ * that writes recaps, or clear the pin so each Session follows its own route,
+ * and toggle the stale-refresh preference. The Host owns the stored values and
+ * the provider catalog; this view only reads and writes them through the
+ * authenticated routes.
  */
 function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale: LocaleRuntime }): ReactNode {
   const t = useT(locale)
@@ -636,6 +648,19 @@ function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale:
   const [message, setMessage] = useState<string | undefined>(undefined)
   const [failure, setFailure] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(false)
+  const [refreshStale, setRefreshStale] = useState<boolean | undefined>(undefined)
+  const [prefsBusy, setPrefsBusy] = useState(false)
+
+  const loadPreferences = useCallback(async (): Promise<void> => {
+    try {
+      const response = await fetch('/api/dsh-recap/preferences', { credentials: 'same-origin' })
+      if (!response.ok) return
+      const payload = (await response.json()) as Preferences
+      setRefreshStale(payload.refreshStale)
+    } catch {
+      // The toggle stays disabled; the model picker still works without it.
+    }
+  }, [])
 
   const load = useCallback(
     async (refresh = false): Promise<void> => {
@@ -668,6 +693,12 @@ function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale:
     if (view === 'page') void load()
   }, [view, load])
 
+  // The preference is a separate read: it must still appear when the provider
+  // catalog fails, which is exactly when someone would come here to look.
+  useEffect(() => {
+    if (view === 'page') void loadPreferences()
+  }, [view, loadPreferences])
+
   const pinned = catalog?.current
   if (view === 'summary') {
     return (
@@ -680,6 +711,35 @@ function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale:
   const providers = catalog?.providers ?? []
   const models = providers.find((entry) => entry.id === provider)?.models ?? []
   const providerError = providers.find((entry) => entry.id === provider)?.error
+
+  /**
+   * Flip the stale-refresh preference. It is written on its own route, so the
+   * Host applies it to the next turn without reloading the plugin, and it is
+   * independent of the model pin: neither write clears the other.
+   */
+  const toggleRefresh = async (next: boolean): Promise<void> => {
+    setPrefsBusy(true)
+    setMessage(undefined)
+    setFailure(undefined)
+    try {
+      const response = await fetch('/api/dsh-recap/preferences', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refreshStale: next }),
+      })
+      const payload = (await response.json()) as Partial<Preferences> & { error?: unknown }
+      if (!response.ok) {
+        throw new Error(typeof payload.error === 'string' ? payload.error : `HTTP ${response.status}`)
+      }
+      setRefreshStale(payload.refreshStale ?? next)
+      setMessage(t('config.saved'))
+    } catch (error) {
+      setFailure(t('config.saveFailed', { reason: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setPrefsBusy(false)
+    }
+  }
 
   const save = async (): Promise<void> => {
     setBusy(true)
@@ -838,6 +898,26 @@ function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale:
           ) : null}
         </div>
       ) : null}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 4 }}>
+        <label
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: prefsBusy ? 'default' : 'pointer' }}
+          htmlFor="dsh-recap-refresh-stale"
+        >
+          <input
+            id="dsh-recap-refresh-stale"
+            type="checkbox"
+            checked={refreshStale === true}
+            disabled={prefsBusy || refreshStale === undefined}
+            onChange={(event) => void toggleRefresh(event.target.checked)}
+            style={{ margin: 0 }}
+          />
+          <span style={{ fontSize: scale(1) }}>{t('config.refreshStale')}</span>
+        </label>
+        <span style={{ color: MUTED, fontSize: scale(0.88), lineHeight: 1.5, paddingLeft: 24 }}>
+          {t('config.refreshStaleHint')}
+        </span>
+      </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <button

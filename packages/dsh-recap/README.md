@@ -21,17 +21,19 @@ A generation that finishes after the log moved on (an event landed, or a human t
 | Command | Result |
 |---------|--------|
 | `/recap` | Generate and show a fresh recap |
-| `/recap status` | Model, detected language, current text, freshness, and the automatic window |
-| `/recap config` | Show the pinned or inherited model and the registered providers |
+| `/recap status` | Model, detected language, current text, freshness (`none` when there is no recap), the stale-refresh preference, and the automatic window |
+| `/recap config` | Show the pinned or inherited model, the stale-refresh preference, and the registered providers |
 | `/recap config <provider>/<model>` | Pin the recap model (the provider must be registered) |
+| `/recap config refresh on\|off` | Toggle the stale-refresh preference |
 | `/recap config reset` | Follow the session's own route again |
 | `/recap clear` | Forget the current recap **on disk too**, and cancel a pending automatic one |
 
 The same pin is editable from the **Plugins** page: the bundle's page carries a
-**Recap model** section with provider and model selectors, **Save**, **Follow the
-session route**, and a refresh control for the provider catalog. Both entry
-points read and write one store, so a change from either shows up in `/recap
-status` immediately.
+**Recap** section with provider and model selectors, **Save**, **Follow the
+session route**, a refresh control for the provider catalog, and the
+**Refresh a stale recap automatically** checkbox. Both entry points read and
+write one store, so a change from either shows up in `/recap status`
+immediately.
 
 ## UI
 
@@ -50,7 +52,7 @@ The composer line hides on the next human message and reappears when a new recap
 | Path | Contents |
 |------|----------|
 | `$DSH_HOME/dsh-recap/<session-id>.json` | `{ version, text, seq, hidden? }` — the recap, the session log length it reflects, and whether the user dismissed it |
-| `$DSH_HOME/dsh-recap.json` | Optional pinned `{ provider, model }` |
+| `$DSH_HOME/dsh-recap.json` | User preferences: optional pinned `{ provider, model }` and `{ refreshStale }` |
 
 Records are written atomically through a temp file and rename, with mode `0600` in a `0700` directory: a recap names files and decisions, so it must not be world-readable. Records untouched for `retentionDays` are pruned at activation.
 
@@ -59,7 +61,7 @@ A recap is current while the session log length is unchanged; **any** new event 
 Two rules keep a stale card from becoming permanent noise:
 
 1. **A human turn persists the hiding.** The card hides on the next human message anyway; that hiding is now written as `hidden: true`, so a reload restores the recap hidden instead of resurrecting an outdated one with a stale badge. `/recap` still opens the panel for it. This is why `showStale` only ever surfaces a stale recap that was *not* superseded by a newer human turn.
-2. **`refreshStale`** (default `true`) regenerates a visible stale recap once the session goes idle. The turn-end timer regenerates when the recap is visible **and** no longer current, so the card heals itself rather than staying stale until the next human message. It never touches a dismissed recap (that one is not visible), and it skips a visible recap that is already current, so a quiet session costs nothing.
+2. **`refreshStale`** (a user preference, default `true`; see [Preferences](#preferences)) regenerates a visible stale recap once the session goes idle. The turn-end timer regenerates when the recap is visible **and** no longer current, so the card heals itself rather than staying stale until the next human message. It never touches a dismissed recap (that one is not visible), and it skips a visible recap that is already current, so a quiet session costs nothing.
 
 Dismissing persists, so a reload does not resurrect it. File storage is deliberate: a third-party bundle resolves its own copy of `@deepseek-ai/dsh-session`, so the private-brand `appendPluginRecord` entry point cannot write to the runtime's Session.
 
@@ -74,6 +76,23 @@ provider whose catalog fails still appears, with its error, so the page can
 explain an empty model list. Only a registered provider is accepted; the model
 id is free-form because catalog membership does not constrain routing.
 
+## Preferences
+
+Some choices are the user's, not the deployment's: they live in
+`$DSH_HOME/dsh-recap.json` next to the model pin and are read on every use, so a
+change applies to the next turn without reloading the plugin. Both writers merge
+into that one file instead of rewriting it wholesale, so setting the pin keeps
+the toggle and clearing the pin keeps the toggle.
+
+| Preference | Default | Meaning | Written by |
+|------------|---------|---------|-----------|
+| `refreshStale` | `true` | Regenerate a visible stale recap once the session idles | Plugins page checkbox (`GET`/`POST /api/dsh-recap/preferences`), `/recap config refresh on\|off` |
+
+The checkbox is part of the bundle's **Plugins** page section, below the model
+picker. It is a separate read from the model catalog, so it still renders when a
+provider catalog fails, and it starts disabled until the stored value arrives —
+never enabled by default, which would misreport the setting.
+
 ## Configuration
 
 | Field | Default | Meaning |
@@ -83,7 +102,6 @@ id is free-form because catalog membership does not constrain routing.
 | `maxTokens` | `2048` | Output token budget for one recap request |
 | `timeoutMs` | `30000` | Abort one recap request after this long |
 | `showStale` | `true` | Keep a restored but stale recap visible on resume; a recap superseded by a human turn stays hidden regardless |
-| `refreshStale` | `true` | Regenerate a visible stale recap once the session idles, instead of leaving the card stale |
 | `subagents` | `false` | Also recap child subagent Sessions automatically |
 | `retentionDays` | `30` | Delete recap files untouched for this long; `0` keeps them |
 

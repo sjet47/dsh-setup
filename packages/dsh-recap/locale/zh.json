@@ -26,7 +26,7 @@
     "updateFailed": "无法更新摘要。"
   },
   "config": {
-    "title": "摘要模型",
+    "title": "摘要",
     "description": "用哪个模型生成一行摘要。不指定时，每个会话沿用自己当前的模型。",
     "provider": "提供方",
     "model": "模型",
@@ -35,6 +35,8 @@
     "saved": "已保存。",
     "loading": "正在读取模型…",
     "noModels": "该提供方没有公布任何模型。",
-    "refresh": "刷新模型列表"
+    "refresh": "刷新模型列表",
+    "refreshStale": "自动刷新已过期的摘要",
+    "refreshStaleHint": "会话空闲时，如果卡片已过期就重新生成，而不是一直挂着「已过期」。被你关掉的摘要不会被重新恢复。"
   }
 }

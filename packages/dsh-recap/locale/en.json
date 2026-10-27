@@ -26,7 +26,7 @@
     "updateFailed": "Could not update the recap."
   },
   "config": {
-    "title": "Recap model",
+    "title": "Recap",
     "description": "Which model writes the one-line recap. While unpinned, each Session uses its own model route.",
     "provider": "Provider",
     "model": "Model",
@@ -35,6 +35,8 @@
     "saved": "Saved.",
     "loading": "Reading models…",
     "noModels": "This provider advertises no models.",
-    "refresh": "Refresh the model list"
+    "refresh": "Refresh the model list",
+    "refreshStale": "Refresh a stale recap automatically",
+    "refreshStaleHint": "When the session idles, regenerate a visible recap that the log has moved past instead of leaving it marked stale. A dismissed recap is never restored."
   }
 }

@@ -99,9 +99,10 @@ test('config exposes defaults', () => {
   assert.equal(defaults.enabled, true)
   assert.equal(defaults.idleMs, 5 * 60 * 1000)
   assert.equal(defaults.showStale, true)
-  // A stale card heals itself unless the user turns this off.
-  assert.equal(defaults.refreshStale, true)
   assert.equal(defaults.retentionDays, 30)
+  // refreshStale is a user preference, not deployment Config: it lives in the
+  // same file as the model pin so a GUI toggle applies without a reload.
+  assert.equal('refreshStale' in defaults, false)
 })
 
 test('generating a recap stores it and marks it current', async () => {
@@ -484,11 +485,14 @@ test('refreshStale regenerates a visible recap the session moved past', async ()
 })
 
 test('refreshStale=false leaves a visible stale recap alone', async () => {
-  freshHome()
+  const home = freshHome()
+  // Opting out is a user preference in the pin file, not deployment Config.
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, 'dsh-recap.json'), JSON.stringify({ refreshStale: false }))
   const session = makeSession()
   const llm = makeLlm('Untouched.')
   const harness = makeContext(session, { llm })
-  apply(harness.ctx, { ...Config(), idleMs: 1, refreshStale: false })
+  apply(harness.ctx, { ...Config(), idleMs: 1 })
   await generate(harness)
 
   session.seq = Number(session.seq) + 3
@@ -715,6 +719,68 @@ test('the config route pins and clears the model, and rejects an unknown provide
   assert.equal((await jsonOf(reset)).current, null)
   assert.equal(existsSync(join(home, 'dsh-recap.json')), true)
   assert.deepEqual(JSON.parse(readFileSync(join(home, 'dsh-recap.json'), 'utf8')), {})
+})
+
+test('the preferences route reads and writes the stale-refresh toggle', async () => {
+  const home = freshHome()
+  const harness = makeContext(makeSession(), { llm: makeLlm('unused') })
+  apply(harness.ctx)
+  const route = harness.routes.get('/api/dsh-recap/preferences')
+  const read = () => route.fetch(new Request('http://x/api/dsh-recap/preferences'))
+  const post = (body) =>
+    route.fetch(
+      new Request('http://x/api/dsh-recap/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    )
+
+  // Default on: a stale card heals itself without anybody opting in.
+  assert.deepEqual(await jsonOf(await read()), { refreshStale: true })
+
+  const off = await post({ refreshStale: false })
+  assert.equal(off.status, 200)
+  assert.deepEqual(await jsonOf(off), { refreshStale: false })
+  assert.equal(JSON.parse(readFileSync(join(home, 'dsh-recap.json'), 'utf8')).refreshStale, false)
+  assert.deepEqual(await jsonOf(await read()), { refreshStale: false })
+
+  // A non-boolean must not be coerced into "off" by accident.
+  const bad = await post({ refreshStale: 'no' })
+  assert.equal(bad.status, 400)
+  assert.deepEqual(await jsonOf(await read()), { refreshStale: false })
+})
+
+test('the pin and the preference share one file without clobbering each other', async () => {
+  const home = freshHome()
+  const harness = makeContext(makeSession(), { llm: makeLlm('unused') })
+  apply(harness.ctx)
+  const file = join(home, 'dsh-recap.json')
+  const pin = harness.routes.get('/api/dsh-recap/config')
+  const prefs = harness.routes.get('/api/dsh-recap/preferences')
+  const postJson = (route, path, body) =>
+    route.fetch(
+      new Request(`http://x${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    )
+
+  await postJson(prefs, '/api/dsh-recap/preferences', { refreshStale: false })
+  await postJson(pin, '/api/dsh-recap/config', { provider: 'deepseek', model: 'deepseek-reasoner' })
+
+  // Writing the pin must keep the toggle...
+  let stored = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(stored.refreshStale, false)
+  assert.equal(stored.model, 'deepseek-reasoner')
+
+  // ...and clearing the pin must not take the toggle with it.
+  await postJson(pin, '/api/dsh-recap/config', { reset: true })
+  stored = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(stored.refreshStale, false)
+  assert.equal('model' in stored, false)
+  assert.equal('provider' in stored, false)
 })
 
 test('empty conversations and unknown sessions fail loudly', async () => {

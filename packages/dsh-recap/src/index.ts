@@ -68,11 +68,6 @@ export interface Config {
   timeoutMs: number
   /** Keep a restored but stale recap visible on resume. */
   showStale: boolean
-  /**
-   * Regenerate a visible recap that the session has moved past. Without this a
-   * stale card stays stale until a human message or a manual `/recap`.
-   */
-  refreshStale: boolean
   /** Also recap child subagent sessions automatically. */
   subagents: boolean
   /** Delete recap files not touched for this many days; 0 keeps them. */
@@ -85,7 +80,6 @@ export const Config: z<Config> = z.object({
   maxTokens: z.number().default(2_048),
   timeoutMs: z.number().default(30_000),
   showStale: z.boolean().default(true),
-  refreshStale: z.boolean().default(true),
   subagents: z.boolean().default(false),
   retentionDays: z.number().default(30),
 })
@@ -235,30 +229,77 @@ function deleteRecord(sessionId: string): void {
   rmSync(recapPath(sessionId), { force: true })
 }
 
-function readOverride(): ModelOverride | undefined {
+/**
+ * The whole user-owned preference file. One file, several keys: the pinned
+ * model and the behavioural toggles are equally "this user's choice" and are
+ * written by different surfaces (the `config` routes and `/recap config`).
+ */
+function readConfigFile(): Record<string, unknown> {
   try {
     const value: unknown = JSON.parse(readFileSync(configPath(), 'utf8'))
-    if (typeof value !== 'object' || value === null) return undefined
-    const record = value as { provider?: unknown; model?: unknown }
-    if (typeof record.provider !== 'string' || typeof record.model !== 'string') return undefined
-    return { provider: record.provider, model: record.model }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+    return value as Record<string, unknown>
   } catch {
-    return undefined
+    return {}
   }
 }
 
-function writeOverride(value: ModelOverride | undefined): void {
+/**
+ * Merge keys into the preference file, atomically and privately.
+ *
+ * A `undefined` value removes the key, so clearing the model pin keeps the
+ * toggles and writing a toggle keeps the pin: the file has more than one owner
+ * and neither may clobber the rest.
+ * @param patch - keys to set, or to remove when `undefined`.
+ */
+function writeConfigFile(patch: Record<string, unknown | undefined>): void {
   const path = configPath()
-  const dir = dirname(path)
-  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const next: Record<string, unknown> = { ...readConfigFile() }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key]
+    else next[key] = value
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const temp = `${path}.tmp-${process.pid}`
   try {
-    writeFileSync(temp, JSON.stringify(value ?? {}, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
+    writeFileSync(temp, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, path)
   } catch (error) {
     rmSync(temp, { force: true })
     throw error
   }
+}
+
+function readOverride(): ModelOverride | undefined {
+  const record = readConfigFile()
+  if (typeof record['provider'] !== 'string' || typeof record['model'] !== 'string') return undefined
+  return { provider: record['provider'], model: record['model'] }
+}
+
+/** Replace the pinned model, or clear it when `value` is undefined. */
+function writeOverride(value: ModelOverride | undefined): void {
+  writeConfigFile({ provider: value?.provider, model: value?.model })
+}
+
+/**
+ * Behavioural preferences, read from disk on every use so a GUI toggle takes
+ * effect on the next turn instead of on the next plugin reload.
+ */
+interface Preferences {
+  /** Regenerate a visible stale recap once the session idles. */
+  refreshStale: boolean
+}
+
+/** Default for [`Preferences.refreshStale`]: a stale card heals itself. */
+const DEFAULT_REFRESH_STALE = true
+
+function readPreferences(): Preferences {
+  const record = readConfigFile()
+  return { refreshStale: typeof record['refreshStale'] === 'boolean' ? record['refreshStale'] : DEFAULT_REFRESH_STALE }
+}
+
+function writePreferences(patch: Partial<Preferences>): void {
+  writeConfigFile(patch)
 }
 
 /** Flatten one message to text for the recap request; non-text blocks are named. */
@@ -633,11 +674,13 @@ export function apply(ctx: Context, config: Config = Config()): void {
         state.timer = undefined
         if (state.generating) return
         // A visible recap that already matches the log needs no work. A visible
-        // one that does not is the stale card: refresh it only when configured
-        // to, so the card heals itself instead of staying stale until a human
-        // message. A dismissed recap is not visible, so it never reaches this
-        // branch and stays dismissed.
-        if (state.visible && (current(state, session) || !config.refreshStale)) return
+        // one that does not is the stale card: refresh it only when the user's
+        // preference allows, so the card heals itself instead of staying stale
+        // until a human message. Read the preference here, not at activation: a
+        // GUI toggle must apply to the next turn without a plugin reload. A
+        // dismissed recap is not visible, so it never reaches this branch and
+        // stays dismissed.
+        if (state.visible && (current(state, session) || !readPreferences().refreshStale)) return
         void generate(session, state, false).catch((error: unknown) => {
           if (error instanceof RecapCancelled) return
           ctx.logger.debug(`dsh-recap: automatic recap failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -698,7 +741,10 @@ export function apply(ctx: Context, config: Config = Config()): void {
               `model: ${view.provider ?? '?'}/${view.model ?? '?'}`,
               `language: ${state.language === undefined ? '(not detected yet)' : `${state.language.code} · ${state.language.source}`}`,
               `recap: ${view.text === '' ? '(none)' : view.text}`,
-              `freshness: ${view.current ? 'current' : 'stale'}${view.visible ? '' : ' · hidden'}`,
+              // With no recap there is nothing to be stale: reported as "none"
+              // so an empty state does not read as a freshness problem.
+              `freshness: ${view.text === '' ? 'none' : view.current ? 'current' : 'stale'}${view.text === '' || view.visible ? '' : ' · hidden'}`,
+              `refresh stale: ${readPreferences().refreshStale ? 'on' : 'off'}`,
               `automatic: ${view.enabled && view.idleMs > 0 ? `after ${Math.round(view.idleMs / 60_000)} min idle` : 'off'}`,
             ].join('\n'),
           }
@@ -716,10 +762,19 @@ export function apply(ctx: Context, config: Config = Config()): void {
               route === undefined
                 ? `following the session route: ${sessionRoute?.provider ?? '?'}/${sessionRoute?.model ?? '?'}`
                 : `pinned: ${route.provider}/${route.model}`,
+              `refresh stale: ${readPreferences().refreshStale ? 'on' : 'off'}`,
               `providers: ${ctx.llm.listProviders().map((provider) => provider.id).join(', ') || '(none)'}`,
-              'usage: /recap config <provider>/<model> | /recap config reset',
+              'usage: /recap config <provider>/<model> | /recap config refresh on|off | /recap config reset',
             ]
             return { kind: 'success', text: lines.join('\n') }
+          }
+          // The stale-refresh toggle is the one preference the Plugins page also
+          // writes; the command exists so it is reachable without the browser.
+          const refresh = /^refresh\s+(on|off)$/i.exec(argument)
+          if (refresh !== null) {
+            const enabled = refresh[1]?.toLowerCase() === 'on'
+            writePreferences({ refreshStale: enabled })
+            return { kind: 'success', text: `Stale recap refresh ${enabled ? 'enabled' : 'disabled'}.` }
           }
           const slash = argument.indexOf('/')
           if (slash <= 0 || slash === argument.length - 1) {
@@ -942,6 +997,39 @@ export function apply(ctx: Context, config: Config = Config()): void {
         }
         catalog = undefined
         return Response.json({ current: { provider, model } }, { headers: { 'cache-control': 'no-store' } })
+      },
+    }),
+  )
+
+  ctx.effect(() =>
+    ctx.connection.fetch.register({
+      path: '/api/dsh-recap/preferences',
+      methods: ['GET', 'POST'],
+      requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        if (request.method === 'GET') {
+          return Response.json(readPreferences(), { headers: { 'cache-control': 'no-store' } })
+        }
+        let body: { refreshStale?: unknown }
+        try {
+          body = (await request.json()) as typeof body
+        } catch {
+          return Response.json({ error: 'invalid body' }, { status: 400 })
+        }
+        // Reject anything but a boolean: a typo must not silently disable the
+        // toggle by being coerced.
+        if (typeof body.refreshStale !== 'boolean') {
+          return Response.json({ error: 'refreshStale must be a boolean' }, { status: 400 })
+        }
+        try {
+          writePreferences({ refreshStale: body.refreshStale })
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          )
+        }
+        return Response.json(readPreferences(), { headers: { 'cache-control': 'no-store' } })
       },
     }),
   )
