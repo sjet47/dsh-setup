@@ -5,7 +5,7 @@ Draw the Mermaid diagrams written in Chat messages, in a frame-wide viewer.
 ## What you get
 
 1. An assistant message that contains a ` ```mermaid ` fence gets a **图表 · n** action under it (one per message, with the diagram count).
-2. The action opens a viewer at three quarters of the viewport showing every diagram in that message: switch between them, zoom (buttons, wheel, drag to pan), toggle **源码 / 预览**, copy the source, or download the SVG.
+2. The action opens a viewer at 62% of the viewport (golden ratio) showing every diagram in that message: switch between them, zoom (buttons, wheel, drag to pan), toggle **源码 / 预览**, copy the source, or download the SVG.
 3. A diagram opens at **100%** and is never scaled down automatically — a complex diagram stays legible. Press **fit** when you want the whole drawing in view, and **reset** to return to 100%.
 4. The code fence in the message itself is left exactly as Chat rendered it — no syntax-highlighted block is replaced, so copy, wrap, and language labels keep working.
 

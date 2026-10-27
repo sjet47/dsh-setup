@@ -270,11 +270,14 @@ const panelStyle: CSSProperties = {
 }
 
 /**
- * Card size as a fraction of the viewport. Large enough that a complex diagram
- * has room, small enough that the page around it still reads as context.
+ * Card size as a fraction of the viewport, at the golden ratio.
+ *
+ * The diagram opens at 100% rather than being auto-fitted, so this is the size
+ * of the *window*, not of the drawing: a card that covers most of the viewport
+ * reads as a modal takeover, while this leaves the page as visible context.
  */
-const CARD_WIDTH = '75vw'
-const CARD_HEIGHT = '75vh'
+const CARD_WIDTH = '62vw'
+const CARD_HEIGHT = '62vh'
 
 const cardStyle: CSSProperties = {
   display: 'flex',
