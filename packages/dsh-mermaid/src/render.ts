@@ -46,13 +46,16 @@ const SAFE_ELEMENTS = new Set([
 /** Theme tokens handed to the renderer as CSS variables. */
 const COLORS: RenderOptions = {
   // Matches the card the viewer draws the diagram on, so `color-mix` derivations
-  // and node fills agree with the surrounding surface.
-  bg: 'var(--dsw-alias-bg-overlay)',
+  // and node fills agree with the surrounding surface. Must be the same opaque
+  // token the panel uses: a mid-grey base flattens every derived contrast.
+  bg: 'var(--dsw-alias-bg-layer-1)',
   fg: 'var(--dsw-alias-label-primary)',
   muted: 'var(--dsw-alias-label-secondary)',
   accent: 'var(--dsw-alias-brand-primary)',
   line: 'var(--dsw-alias-border-l2)',
-  border: 'var(--dsw-alias-border-l2)',
+  // The renderer's default node stroke is `fg` at 20%, which all but disappears
+  // on a dark plate; a named mix keeps the node outline readable in both themes.
+  border: 'color-mix(in srgb, var(--dsw-alias-label-primary) 28%, var(--dsw-alias-bg-layer-1))',
   // The viewer draws on the card, so the drawing itself carries no plate; the
   // colours above stay the derivation basis for node fills and strokes.
   transparent: true,

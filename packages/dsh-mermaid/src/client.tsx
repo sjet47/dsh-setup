@@ -79,8 +79,10 @@ const ZH: Record<string, string> = {
 
 /* ── theme tokens ─────────────────────────────────────────────────────────── */
 
-const SURFACE = 'var(--dsw-alias-bg-overlay, #ffffff)'
-const BORDER = 'var(--dsw-alias-border-l1, rgba(0,0,0,0.12))'
+// An opaque raised surface. `--dsw-alias-bg-overlay` is a mid grey in dark mode
+// (#61666b), and a plate of it behind a light-on-dark drawing reads as haze.
+const SURFACE = 'var(--dsw-alias-bg-layer-1, #ffffff)'
+const BORDER = 'var(--dsw-alias-border-l2, rgba(0,0,0,0.16))'
 const TEXT = 'var(--dsw-alias-label-primary, #1f1f1f)'
 const MUTED = 'var(--dsw-alias-label-secondary, #6b6b6b)'
 const HOVER = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05))'
@@ -197,8 +199,8 @@ async function requestDiagrams(sources: readonly string[]): Promise<readonly Ren
 
 /** Renderer stylesheet scoped to the shadow root, not to the application. */
 const SHADOW_STYLE = `
-  :host { display: block; }
-  .stage { display: flex; align-items: center; justify-content: center; padding: 16px; }
+  :host { display: block; height: 100%; }
+  .stage { display: flex; height: 100%; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
   svg { display: block; max-width: none; height: auto; }
 `
 
@@ -258,7 +260,7 @@ const panelStyle: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   padding: '4vh 4vw',
-  background: 'rgba(0,0,0,0.36)',
+  background: 'rgba(0,0,0,0.5)',
 }
 
 const cardStyle: CSSProperties = {
@@ -565,7 +567,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
           {failure !== null && <div style={{ ...centered, color: ERROR, fontSize: 12 }}>{failure}</div>}
           {!loading && failure === null && showSource && <SourceView source={source} />}
           {!loading && failure === null && !showSource && current !== undefined && current.ok && (
-            <div style={{ ...centered, alignItems: 'stretch', justifyContent: 'stretch' }}>
+            <div style={{ ...centered, padding: 0, alignItems: 'stretch', justifyContent: 'stretch' }}>
               <DiagramSurface svg={current.svg} scale={scale} offset={offset} />
             </div>
           )}
