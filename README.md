@@ -39,6 +39,27 @@ A package with a browser half compiles `src/client.tsx` to CommonJS and wraps it
 3. After updating the dsh app, run `pnpm install` (this pulls the matching `@deepseek-ai/*` devDependencies used for type checking), then `pnpm run build && pnpm test && pnpm run smoke`. When dsh moves to a new minor, bump the root `devDependencies` and every `engines.dsh` together.
 4. Host rows and routes only come from the newly composed tree, so a version change needs a dsh restart; client bundles reload on their own.
 
+## Hot reloading a linked plugin
+
+After `pnpm run build`, host-side code changes land on the running profile one of two ways. Neither needs a restart.
+
+**1. Toggle the plugin off and on again (no configuration).** Any write to the profile — enabling or disabling an entry, adding a bundle — calls `plugin-manager`'s `reload()`, which calls `hmr.reconcileProfile()`. That is not a watcher: it compares every module loaded from the profile and its linked packages against disk, keyed by `ino:size:mtimeMs`. Changed modules are evicted and their Loader entries restarted, so the next request runs the new code. This works under the default `hmr` configuration, covers *every* linked package at once, and costs two clicks. The tradeoff is that it is manual, and restarting the entry drops in-memory plugin state (recap re-reads its record from disk, for example).
+
+**2. Let `dsh-hmr` watch the package (automatic).** The default is deliberately conservative: `dsh-base` mounts `@deepseek-ai/dsh-hmr` with `root: []`, so only profile patch files are watched and module files are not — which is why a plain `build` appears to change nothing. Opt a package in under the profile's `cordis.patch.yml`:
+
+```yaml
+- id: hmr
+  name: "@deepseek-ai/dsh-hmr"
+  config:
+    base: /home/sjet/repo/dsh-setup/packages
+    root:
+      - dsh-recap/lib
+```
+
+`root` entries resolve against `base`, and the default `ignored` already excludes `**/node_modules`. Then `pnpm run build` alone publishes host changes: verified by patching a route's response body and seeing the new field within 8 s, with the same patch under `root: []` staying invisible.
+
+Both paths only reach modules inside the profile directory or a linked package's real path. Client halves and `cordis.patch.yml` edits reload on their own either way.
+
 ## Install
 
 From the Web **Plugins** page:
@@ -46,7 +67,7 @@ From the Web **Plugins** page:
 1. **Add plugin** → **Install a third-party plugin**
 2. Enter an absolute local path (`link:/home/sjet/repo/dsh-setup/packages/dsh-note`), a Git address, or a published package name
 3. Install, then switch the new bundle **On**
-4. Restart dsh: client bundles reload through HMR, host rows (including a newly added `Config`) do not
+4. Restart dsh: client bundles reload through HMR, host rows (including a newly added `Config`) do not. Editing an existing plugin is different — see [Hot reloading a linked plugin](#hot-reloading-a-linked-plugin)
 
 For a scratch profile during development:
 
