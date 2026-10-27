@@ -7,9 +7,9 @@ Re-enter a session without rereading the transcript: one line that starts with w
 | # | Trigger | Behaviour |
 |---|---------|-----------|
 | 1 | `/recap` | Generate a fresh recap now |
-| 2 | Resume | Restore the saved recap — visible when it is current, and also when it is stale unless `showStale` is off |
-| 3 | Idle | After a turn ends, wait `idleMs` (five minutes by default); if nothing else happens, generate one automatically |
-| 4 | New human message | Hide the previous recap and cancel a pending automatic one |
+| 2 | Resume | Restore the saved recap — visible when it is current. A stale one stays visible only when `showStale` is on *and* no newer human turn superseded it (that turn persists the hiding) |
+| 3 | Idle | After a turn ends, wait `idleMs` (five minutes by default); if nothing else happens, generate one automatically — and with `refreshStale` on, also regenerate a card that had gone stale |
+| 4 | New human message | Hide the previous recap (persisted, so a reload keeps it hidden) and cancel a pending automatic one |
 | 5 | Plugin unload | Every pending timer and in-flight request is cancelled |
 
 A recap is stored outside model context, so it never enters the conversation or its token cost.
@@ -54,7 +54,14 @@ The composer line hides on the next human message and reappears when a new recap
 
 Records are written atomically through a temp file and rename, with mode `0600` in a `0700` directory: a recap names files and decisions, so it must not be world-readable. Records untouched for `retentionDays` are pruned at activation.
 
-A recap is current while the session log length is unchanged; any new event makes it stale. Dismissing persists, so a reload does not resurrect it. File storage is deliberate: a third-party bundle resolves its own copy of `@deepseek-ai/dsh-session`, so the private-brand `appendPluginRecord` entry point cannot write to the runtime's Session.
+A recap is current while the session log length is unchanged; **any** new event makes it stale, because `seq` is a log position, not a content hash. A recap therefore goes stale whenever it predates the tail of the log — which includes the common case where a session kept going and the five-minute idle window never elapsed before the app closed, so no newer recap was ever written.
+
+Two rules keep a stale card from becoming permanent noise:
+
+1. **A human turn persists the hiding.** The card hides on the next human message anyway; that hiding is now written as `hidden: true`, so a reload restores the recap hidden instead of resurrecting an outdated one with a stale badge. `/recap` still opens the panel for it. This is why `showStale` only ever surfaces a stale recap that was *not* superseded by a newer human turn.
+2. **`refreshStale`** (default `true`) regenerates a visible stale recap once the session goes idle. The turn-end timer regenerates when the recap is visible **and** no longer current, so the card heals itself rather than staying stale until the next human message. It never touches a dismissed recap (that one is not visible), and it skips a visible recap that is already current, so a quiet session costs nothing.
+
+Dismissing persists, so a reload does not resurrect it. File storage is deliberate: a third-party bundle resolves its own copy of `@deepseek-ai/dsh-session`, so the private-brand `appendPluginRecord` entry point cannot write to the runtime's Session.
 
 ## Model selection
 
@@ -75,7 +82,8 @@ id is free-form because catalog membership does not constrain routing.
 | `idleMs` | `300000` | Idle delay after a turn; `0` disables automatic recaps |
 | `maxTokens` | `2048` | Output token budget for one recap request |
 | `timeoutMs` | `30000` | Abort one recap request after this long |
-| `showStale` | `true` | Keep a restored but stale recap visible on resume |
+| `showStale` | `true` | Keep a restored but stale recap visible on resume; a recap superseded by a human turn stays hidden regardless |
+| `refreshStale` | `true` | Regenerate a visible stale recap once the session idles, instead of leaving the card stale |
 | `subagents` | `false` | Also recap child subagent Sessions automatically |
 | `retentionDays` | `30` | Delete recap files untouched for this long; `0` keeps them |
 

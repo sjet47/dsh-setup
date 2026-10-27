@@ -68,6 +68,11 @@ export interface Config {
   timeoutMs: number
   /** Keep a restored but stale recap visible on resume. */
   showStale: boolean
+  /**
+   * Regenerate a visible recap that the session has moved past. Without this a
+   * stale card stays stale until a human message or a manual `/recap`.
+   */
+  refreshStale: boolean
   /** Also recap child subagent sessions automatically. */
   subagents: boolean
   /** Delete recap files not touched for this many days; 0 keeps them. */
@@ -80,6 +85,7 @@ export const Config: z<Config> = z.object({
   maxTokens: z.number().default(2_048),
   timeoutMs: z.number().default(30_000),
   showStale: z.boolean().default(true),
+  refreshStale: z.boolean().default(true),
   subagents: z.boolean().default(false),
   retentionDays: z.number().default(30),
 })
@@ -603,6 +609,20 @@ export function apply(ctx: Context, config: Config = Config()): void {
       // an answer the user asked for.
       state.visible = false
       clearTimer(state)
+      // The hiding is persisted, not just held in memory. The recap now
+      // predates this turn, so restoring it as "visible but stale" would put an
+      // outdated card back on screen after a reload — which is exactly the
+      // stale card this avoids. `/recap` still opens the panel for it.
+      if (state.text !== '' && state.hidden !== true) {
+        state.hidden = true
+        try {
+          writeRecord(sessionId, { version: 1, text: state.text, seq: state.seq, hidden: true })
+        } catch (error) {
+          ctx.logger.debug(
+            `dsh-recap: cannot persist the hidden recap: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      }
       return
     }
     if (event.type === 'turn/end') {
@@ -611,7 +631,13 @@ export function apply(ctx: Context, config: Config = Config()): void {
       if (session.header.origin === 'subagent' && !config.subagents) return
       state.timer = setTimeout(() => {
         state.timer = undefined
-        if (state.visible || state.generating) return
+        if (state.generating) return
+        // A visible recap that already matches the log needs no work. A visible
+        // one that does not is the stale card: refresh it only when configured
+        // to, so the card heals itself instead of staying stale until a human
+        // message. A dismissed recap is not visible, so it never reaches this
+        // branch and stays dismissed.
+        if (state.visible && (current(state, session) || !config.refreshStale)) return
         void generate(session, state, false).catch((error: unknown) => {
           if (error instanceof RecapCancelled) return
           ctx.logger.debug(`dsh-recap: automatic recap failed: ${error instanceof Error ? error.message : String(error)}`)

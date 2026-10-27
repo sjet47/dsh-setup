@@ -99,6 +99,8 @@ test('config exposes defaults', () => {
   assert.equal(defaults.enabled, true)
   assert.equal(defaults.idleMs, 5 * 60 * 1000)
   assert.equal(defaults.showStale, true)
+  // A stale card heals itself unless the user turns this off.
+  assert.equal(defaults.refreshStale, true)
   assert.equal(defaults.retentionDays, 30)
 })
 
@@ -407,6 +409,116 @@ test('an automatic recap stays hidden when the log moved on', async () => {
   assert.equal(payload.text, 'automatic')
   assert.equal(payload.visible, false)
   assert.equal(payload.stale, true)
+})
+
+test('a human turn persists the hiding, so a reload cannot resurrect a stale card', async () => {
+  const home = freshHome()
+  const session = makeSession()
+  const first = makeContext(session, { llm: makeLlm('Goal. State. Next.') })
+  apply(first.ctx)
+  await generate(first)
+  const file = join(home, 'dsh-recap', 'session-recap.json')
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).hidden, undefined)
+
+  // The session moves on: the stored recap now predates the log.
+  session.seq = Number(session.seq) + 4
+  first.emit('session/event', session, { type: 'user/message', data: { source: { kind: 'user' } } })
+
+  // Hiding is on disk, not only in memory. Without that, a fresh process would
+  // restore the outdated recap as "visible but stale" - the stale card exactly.
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).hidden, true)
+  const second = makeContext(session, { llm: makeLlm('unused') })
+  apply(second.ctx, { ...Config(), showStale: true })
+  const restored = await jsonOf(await state(second))
+  assert.equal(restored.text, 'Goal. State. Next.')
+  assert.equal(restored.visible, false)
+})
+
+test('the next turn still recaps after a human turn hid the old one', async () => {
+  freshHome()
+  const session = makeSession()
+  const llm = makeLlm('Fresh.')
+  const harness = makeContext(session, { llm })
+  apply(harness.ctx, { ...Config(), idleMs: 1 })
+  await generate(harness)
+
+  session.seq = Number(session.seq) + 2
+  harness.emit('session/event', session, { type: 'user/message', data: { source: { kind: 'user' } } })
+  harness.emit('session/event', session, {
+    type: 'turn/end',
+    data: { turn: 2, reason: { kind: 'completed' } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  const payload = await jsonOf(await state(harness))
+  // Persisting the hiding must not switch automatic recaps off.
+  assert.equal(payload.visible, true)
+  assert.equal(payload.current, true)
+  assert.equal(payload.stale, false)
+})
+
+test('refreshStale regenerates a visible recap the session moved past', async () => {
+  freshHome()
+  const session = makeSession()
+  const llm = makeLlm('Refreshed.')
+  const harness = makeContext(session, { llm })
+  apply(harness.ctx, { ...Config(), idleMs: 1 })
+  await generate(harness)
+  assert.equal(llm.requests.filter((request) => !/detect the language/i.test(request.system)).length, 1)
+
+  // A goal round or steering nudge grows the log without a human message, so
+  // the card stays visible and goes stale.
+  session.seq = Number(session.seq) + 3
+  assert.equal((await jsonOf(await state(harness))).stale, true)
+
+  harness.emit('session/event', session, {
+    type: 'turn/end',
+    data: { turn: 2, reason: { kind: 'completed' } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  const payload = await jsonOf(await state(harness))
+  assert.equal(payload.text, 'Refreshed.')
+  assert.equal(payload.stale, false)
+  assert.equal(payload.current, true)
+})
+
+test('refreshStale=false leaves a visible stale recap alone', async () => {
+  freshHome()
+  const session = makeSession()
+  const llm = makeLlm('Untouched.')
+  const harness = makeContext(session, { llm })
+  apply(harness.ctx, { ...Config(), idleMs: 1, refreshStale: false })
+  await generate(harness)
+
+  session.seq = Number(session.seq) + 3
+  harness.emit('session/event', session, {
+    type: 'turn/end',
+    data: { turn: 2, reason: { kind: 'completed' } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  const payload = await jsonOf(await state(harness))
+  // No second recap request: opting out must not spend tokens.
+  assert.equal(llm.requests.filter((request) => !/detect the language/i.test(request.system)).length, 1)
+  assert.equal(payload.stale, true)
+})
+
+test('a current visible recap is never regenerated for refresh', async () => {
+  freshHome()
+  const session = makeSession()
+  const llm = makeLlm('Already current.')
+  const harness = makeContext(session, { llm })
+  apply(harness.ctx, { ...Config(), idleMs: 1 })
+  await generate(harness)
+
+  harness.emit('session/event', session, {
+    type: 'turn/end',
+    data: { turn: 2, reason: { kind: 'completed' } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  assert.equal(llm.requests.filter((request) => !/detect the language/i.test(request.system)).length, 1)
 })
 
 test('/recap status and model pinning', async () => {
