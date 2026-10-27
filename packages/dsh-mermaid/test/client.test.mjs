@@ -329,3 +329,42 @@ test('the drawing host spans the body so the diagram centres', async () => {
   assert.equal(host.style.height, '100%')
   unmount()
 })
+
+test('the wheel zooms once a subject is open', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, MD)
+  const body = container.querySelector('[role="dialog"] div[style*="cursor"]')
+  assert.ok(body !== null, 'the drawing body exists')
+  const percent = () => [...container.querySelectorAll('span')].map((n) => n.textContent).find((t) => t?.endsWith('%'))
+  assert.equal(percent(), '100%')
+  // Wheel-up zooms in; the listener is attached natively to the body element.
+  await act(async () => {
+    body.dispatchEvent(new dom.window.WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }))
+  })
+  assert.equal(percent(), '125%', 'wheel-up scaled by one step')
+  unmount()
+})
+
+test('the drawing body refuses text selection while panning', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, MD)
+  const body = container.querySelector('[role="dialog"] div[style*="cursor"]')
+  assert.ok(body !== null)
+  assert.equal(body.style.userSelect, 'none')
+  unmount()
+})
+
+test('the source view keeps text selectable', async () => {
+  stubRoute(drawLikeHost)
+  const plugin = loadPlugin(makeLocale())
+  const { container, unmount } = await openViewer(plugin, MD)
+  const toggle = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Source'))
+  await act(async () => {
+    toggle.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+  })
+  const body = container.querySelector('[role="dialog"] div[style*="cursor"]')
+  assert.equal(body.style.userSelect, 'text')
+  unmount()
+})

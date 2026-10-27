@@ -359,6 +359,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [showSource, setShowSource] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const dragRef = useRef<{ x: number; y: number } | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const translateRef = useRef(t)
@@ -433,19 +434,30 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
   // Zoom on the wheel, as a diagram viewer should. React registers its wheel
   // listener as passive, so this is attached natively to keep preventDefault
   // effective and stop the page from scrolling behind the panel.
+  //
+  // `key` is a dependency because the body element only exists while a subject
+  // is open: the effect's first run sees no element, and opening the panel must
+  // re-run it rather than rely on `showSource` changing.
   useEffect(() => {
     const body = bodyRef.current
     if (body === null || showSource) return undefined
+    let lastAt = 0
     const onWheel = (event: WheelEvent) => {
       event.preventDefault()
+      // Trackpads emit a burst of events per gesture; without a floor the
+      // drawing races from 100% to the bound in one flick.
+      const now = Date.now()
+      if (now - lastAt < 24) return
+      lastAt = now
       setScale((value) => clampScale(event.deltaY < 0 ? value * ZOOM_STEP : value / ZOOM_STEP))
     }
     body.addEventListener('wheel', onWheel, { passive: false })
     return () => body.removeEventListener('wheel', onWheel)
-  }, [showSource])
+  }, [showSource, key])
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     dragRef.current = { x: event.clientX, y: event.clientY }
+    setDragging(true)
     event.currentTarget.setPointerCapture(event.pointerId)
   }
 
@@ -460,6 +472,7 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
 
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     dragRef.current = null
+    setDragging(false)
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
@@ -576,7 +589,16 @@ function DiagramPanel({ locale }: { locale: LocaleRuntime }): ReactNode {
 
         <div
           ref={bodyRef}
-          style={{ position: 'relative', flex: 1, minHeight: 0, overflow: 'hidden', cursor: showSource ? 'auto' : 'grab' }}
+          style={{
+            position: 'relative',
+            flex: 1,
+            minHeight: 0,
+            overflow: 'hidden',
+            cursor: showSource ? 'auto' : dragging ? 'grabbing' : 'grab',
+            // Panning must not paint a text selection over the labels; the
+            // source view keeps selection so its text stays copyable.
+            userSelect: showSource ? 'text' : 'none',
+          }}
           onPointerDown={showSource ? undefined : onPointerDown}
           onPointerMove={showSource ? undefined : onPointerMove}
           onPointerUp={showSource ? undefined : onPointerUp}
