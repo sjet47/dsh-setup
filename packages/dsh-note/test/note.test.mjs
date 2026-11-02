@@ -72,6 +72,12 @@ test('the rules text mirrors pi-note’s current guidance', () => {
   assert.ok(block.includes('where the hook is a short phrase (under ~150 characters)'))
   assert.ok(block.includes('Put any script longer than a one-liner'))
   assert.ok(block.includes("`/s` is this session's workspace"))
+  // Byte-identical with pi-note's prompt.ts: both agents read the same memories.
+  assert.ok(
+    block.includes(
+      "Changes to `/m/MEMORY.md` made while this session is idle are announced at the start of your next turn, with the file's new content. Writes this session makes itself are not announced. Treat an announced change as a fresh read of the index: it supersedes the snapshot above.",
+    ),
+  )
   assert.ok(!block.includes('<SCRATCH_DIR>'))
 })
 
