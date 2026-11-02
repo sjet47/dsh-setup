@@ -1,13 +1,20 @@
 // Filesystem side of session setup, factored out of the hook so it can be
 // exercised against throwaway directories. Throws on failure; the caller (the
 // session_start hook) owns the degradation policy (SPEC §6 F1 step 5).
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MEMORY_INDEX_NAME } from "./paths.js";
 
 export interface PreparedSession {
 	/** MEMORY.md content at session start; "" means there is no index yet. */
 	snapshot: string;
+	/**
+	 * Metadata of the file the snapshot was read from, when the two stats
+	 * around the read agreed. The caller uses it as the refresh baseline, so the
+	 * snapshot and the baseline always describe the same bytes; undefined means
+	 * the file moved under the read and the baseline must be discovered later.
+	 */
+	stat?: { mtimeNs: bigint; size: number };
 }
 
 /**
@@ -25,5 +32,9 @@ export function prepareSession(memoryDir: string, scratchDir: string): PreparedS
 	if (!existsSync(memoryIndex)) writeFileSync(memoryIndex, "", "utf8");
 	mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
 	chmodSync(scratchDir, 0o700); // pin 0700 regardless of the process umask
-	return { snapshot: readFileSync(memoryIndex, "utf8") };
+	const before = statSync(memoryIndex, { bigint: true });
+	const snapshot = readFileSync(memoryIndex, "utf8");
+	const after = statSync(memoryIndex, { bigint: true });
+	if (before.mtimeNs !== after.mtimeNs || before.size !== after.size) return { snapshot };
+	return { snapshot, stat: { mtimeNs: after.mtimeNs, size: Number(after.size) } };
 }

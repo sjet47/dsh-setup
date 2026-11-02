@@ -33,6 +33,26 @@ Unloading the plugin disposes every agent-scoped prompt section it registered; i
 
 The scratchpad is passed as an absolute path in that section and exported to shell calls as `$DSH_NOTE_SCRATCHPAD_DIR`. dsh cannot rewrite tool arguments, so unlike pi-note there is no `$PI_NOTE_SCRATCHPAD_DIR` expansion for read/write/edit — the absolute path works in every tool instead.
 
+## MEMORY.md refresh
+
+The frozen snapshot has one consequence: a memory another agent (pi, a sibling dsh session, your editor) writes mid-session stays invisible. The plugin closes that gap without giving up the stable prompt prefix.
+
+At the **first step of every turn** it probes `MEMORY.md`:
+
+1. `stat` first — an unchanged mtime/size means no read at all, so the common case is one syscall;
+2. once the metadata moved, the content digest decides whether anything really changed: a `touch`, or a byte-identical save by an editor, announces nothing;
+3. a real change enters the turn as one logged `user/message` right after the user's input — a `<system-reminder>` naming the file, listing the index lines that appeared or disappeared, and carrying the new index (capped at `memoryRefreshMaxChars`). Chat renders it as an expandable context row, like a workspace instruction update.
+
+Because it is an ordinary message, it replays and resumes with the rest of the history and it never touches the system prompt. A change that arrives mid-turn is announced at the start of the next turn. Compaction may drop the announcement like any other message; the rules text already tells the agent to read `MEMORY.md` directly after compaction.
+
+The baseline only advances when the announcement is actually in the session log, so a step that is cancelled between pre-step and the append announces the change again next turn instead of losing it. A first step with no claimed input is left alone: injecting there would make the agent answer unprompted.
+
+The session's **own** successful `write`, `edit` or `str_replace_editor` call on the index is adopted as the new baseline instead of being echoed back at it; a later external change still differs and is announced. Known blind spots:
+
+1. writes through `bash`, from a subagent, or from another session are not recognised as this session's own, so the change is announced back to it — redundant but correct;
+2. only `MEMORY.md` is watched; editing a topic file without an index line announces nothing;
+3. the fast path hides a rewrite that preserves both mtime and size (`cp -p`, `git checkout` of an identical stat). Editing a same-length hook in place can therefore stay unnoticed until the next mtime change.
+
 ## UI
 
 There are two ways in, and both open the same panel:
@@ -64,13 +84,15 @@ Reading and deleting go through authenticated `/api/dsh-note/*` routes; only the
 
 | Field | Default | Meaning |
 |-------|---------|---------|
-| `enabled` | `true` | Keep the plugin loaded but stop prompt injection, routes, and the panel |
+| `enabled` | `true` | Keep the plugin loaded but stop prompt injection, routes, the refresh probe, and the panel |
 | `snapshotMaxChars` | `16000` | Cap on the `MEMORY.md` snapshot placed in the system prompt |
 | `maxBodyBytes` | `1048576` | Largest memory file the browser may read (413 above it) |
+| `memoryRefresh` | `true` | Announce external `MEMORY.md` changes at the start of the next turn |
+| `memoryRefreshMaxChars` | `16000` | Cap on the `MEMORY.md` content copied into one refresh message |
 
 ## Differences from pi-note
 
-The rules text is kept in sync with pi-note's `prompt.ts`; only the scratchpad paragraph diverges, for the path mechanics below.
+The rules text is kept in sync with pi-note's `prompt.ts`; two paragraphs diverge: the scratchpad one, for the path mechanics below, and the one describing the `MEMORY.md` refresh, which pi-note does not have.
 
 - The detail view has no "open in `$EDITOR`": a browser cannot hand a file to a terminal editor. Use **Copy path** and edit it in your own editor, or ask the agent.
 - `$PI_NOTE_SCRATCHPAD_DIR` expansion in fs tool arguments is replaced by an absolute path plus `$DSH_NOTE_SCRATCHPAD_DIR` for shell calls.

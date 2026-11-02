@@ -15,15 +15,18 @@
  * HTTP route plus a Web client panel.
  * @module dsh-note
  */
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { statSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-shell-env'
+import type {} from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { buildTopics, type MemoryTopic } from './memory-index.js'
 import { deleteTopic, loadTopics, readTopicBody, resolveInside } from './memory-store.js'
@@ -31,6 +34,7 @@ import { memoryRootFor } from './git-root.js'
 import { MEMORY_DIR_NAME, MEMORY_INDEX_NAME, memoryDirFor, memoryRootLabel, scratchpadDirFor, scratchpadRoot } from './paths.js'
 import { prepareSession } from './prepare.js'
 import { buildPromptAppend } from './prompt.js'
+import { buildMemoryRefresh, baselineFromSnapshot, DEFAULT_REFRESH_MAX_CHARS, probeIndex, sameIndex, type IndexSnapshot } from './refresh.js'
 
 export const name = 'note'
 export const inject = ['commands', 'connection', 'sessions'] as const
@@ -45,12 +49,18 @@ export interface Config {
   snapshotMaxChars: number
   /** Largest memory file the browser may read in one request. */
   maxBodyBytes: number
+  /** Announce MEMORY.md changes at the start of the turn after they happen. */
+  memoryRefresh: boolean
+  /** Longest MEMORY.md content copied into one refresh message. */
+  memoryRefreshMaxChars: number
 }
 
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   snapshotMaxChars: z.number().default(16_000),
   maxBodyBytes: z.number().default(1024 * 1024),
+  memoryRefresh: z.boolean().default(true),
+  memoryRefreshMaxChars: z.number().min(1).default(DEFAULT_REFRESH_MAX_CHARS),
 })
 
 /** Pi's own agent directory, so both agents read the same memories. */
@@ -65,6 +75,19 @@ interface NoteRecord {
   scratchDir: string
   label: string
   snapshot: string
+  /**
+   * MEMORY.md as this session last saw it. Undefined until the first successful
+   * probe, so a file that could not be read at session start is adopted as the
+   * baseline silently instead of being announced as a change.
+   */
+  trackedIndex?: IndexSnapshot
+  /**
+   * A rendered refresh waiting to be logged. The baseline only advances once the
+   * message is in the session log (`session/event`), so a step that is abandoned
+   * between pre-step and the append announces the change again later instead of
+   * losing it.
+   */
+  pendingRefresh?: { messageId: string; next: IndexSnapshot }
   fiber?: Fiber
 }
 
@@ -117,6 +140,52 @@ function sessionCwd(ctx: Context, session: Session): string | undefined {
 }
 
 /**
+ * Tools whose successful call means this session rewrote a file. The list is
+ * deliberately narrow: a `bash` heredoc, a subagent, or another session writing
+ * MEMORY.md is not recognised as this session's own, and the next turn then
+ * announces that write back — still correct information, just redundant.
+ */
+const SELF_WRITE_TOOLS = new Set(['write', 'edit', 'str_replace_editor'])
+
+/**
+ * Build the durable user message that announces a memory-index change. It
+ * enters through `agent/pre-step`, so it becomes an ordinary logged
+ * `user/message`: it replays, compacts and resumes like the workspace
+ * instruction messages do.
+ * @param refresh - rendered text and its source descriptor.
+ * @returns the message to insert into the next step.
+ */
+function refreshMessage(refresh: ReturnType<typeof buildMemoryRefresh>): UserMessage {
+  return {
+    id: randomUUID() as unknown as MessageId,
+    role: 'user',
+    content: [{ type: 'text', text: refresh.text }],
+    source: refresh.source,
+  } as unknown as UserMessage
+}
+
+/**
+ * Absolute path a write/edit call targeted, when it named one. `~` is expanded
+ * here because the fs backend expands it before touching the file, so an
+ * untranslated spelling would never match the index path. `file_path` is the
+ * file-tool argument; `path` is the string-replace editor's.
+ * @param args - parsed tool arguments.
+ * @param cwd - session working directory for relative paths.
+ * @returns the resolved path, or undefined when the call named no file.
+ */
+function touchedPath(args: unknown, cwd: string | undefined): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined
+  const record = args as { file_path?: unknown; path?: unknown }
+  const value = typeof record.file_path === 'string' ? record.file_path : record.path
+  if (typeof value !== 'string') return undefined
+  let trimmed = value.trim()
+  if (trimmed === '') return undefined
+  if (trimmed === '~' || trimmed.startsWith('~/')) trimmed = join(homedir(), trimmed.slice(1))
+  if (isAbsolute(trimmed)) return resolve(trimmed)
+  return cwd === undefined ? undefined : resolve(cwd, trimmed)
+}
+
+/**
  * Install the memory injection, the scratchpad environment, the `/memory`
  * command, and the browser routes.
  * @param ctx - plugin context.
@@ -155,7 +224,14 @@ export function apply(ctx: Context, config: Config = Config()): void {
     if (paths === undefined) return undefined
     try {
       const prepared = prepareSession(paths.memoryDir, paths.scratchDir)
-      const record: NoteRecord = { ...paths, snapshot: prepared.snapshot }
+      // The baseline is the snapshot itself, not a second read: the model gets
+      // `prepared.snapshot`, so anything that differs from it afterwards is a
+      // real change worth announcing.
+      const record: NoteRecord = {
+        ...paths,
+        snapshot: prepared.snapshot,
+        ...(config.memoryRefresh ? { trackedIndex: baselineFromSnapshot(prepared.snapshot, prepared.stat) } : {}),
+      }
       records.set(sessionId, record)
       return record
     } catch (error) {
@@ -194,6 +270,95 @@ export function apply(ctx: Context, config: Config = Config()): void {
       if (record.fiber !== undefined) void record.fiber.dispose()
     }
     records.clear()
+  })
+
+  // A successful write/edit of the index by this very session is adopted as the
+  // baseline instead of being announced back at it on the next turn. A later
+  // external change still differs from that adopted snapshot, so it is announced.
+  ctx.on('tools/result', (exec, result) => {
+    if (!config.enabled || !config.memoryRefresh || result.isError) return
+    if (!SELF_WRITE_TOOLS.has(exec.name)) return
+    const agent = exec.agent
+    if (agent === undefined) return
+    try {
+      const record = records.get(String(agent.id))
+      if (record === undefined) return
+      const target = touchedPath(exec.arguments, sessionCwd(ctx, agent.session))
+      if (target === undefined || target !== resolve(record.memoryIndex)) return
+      const probe = probeIndex(record.memoryIndex)
+      if (probe.kind === 'unstable') return
+      record.trackedIndex = probe
+      // A refresh rendered for the previous content is superseded, not stale.
+      delete record.pendingRefresh
+    } catch (error) {
+      ctx.logger.warn(`dsh-note: cannot re-baseline the memory index: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+
+  // The baseline advances only once the refresh message is in the log. A step
+  // abandoned between pre-step and the append (abort, a rejecting listener) then
+  // announces the change again next turn instead of dropping it.
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'user/message') return
+    const messageId = String(event.data.id)
+    for (const record of records.values()) {
+      const pending = record.pendingRefresh
+      if (pending === undefined || pending.messageId !== messageId) continue
+      record.trackedIndex = pending.next
+      delete record.pendingRefresh
+      return
+    }
+  })
+
+  // MEMORY.md is frozen into the system prompt at session start, so a memory
+  // another agent writes would stay invisible. Check it once per turn — at the
+  // first pre-step — and hand the new content over as one logged user message.
+  // mtime/size make the check a single stat; the digest keeps a `touch` quiet.
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    if (!config.enabled || !config.memoryRefresh) return decision
+    if (decision.kind === 'reject' || payload.step !== 1) return decision
+    // The loop skips an empty first step; entering ours would make the agent
+    // answer without being asked. Keep the baseline, announce on the next turn.
+    if (payload.messages.length === 0) return decision
+    try {
+      const sessionId = String(payload.agent.id)
+      // After an unload/HMR the records are gone while the agent lives on.
+      const record = records.get(sessionId) ?? ensureRecord(sessionId)
+      if (record === undefined) return decision
+      const probe = probeIndex(record.memoryIndex, record.trackedIndex)
+      if (probe.kind === 'unstable') return decision
+      const previous = record.trackedIndex
+      if (previous === undefined || sameIndex(previous, probe)) {
+        // First usable observation, or the same memory under a new mtime.
+        record.trackedIndex = probe
+        return decision
+      }
+      const refresh = buildMemoryRefresh({
+        indexPath: record.memoryIndex,
+        previous,
+        current: probe,
+        maxChars: config.memoryRefreshMaxChars,
+      })
+      const message = refreshMessage(refresh)
+      // Enter the refresh right after the claimed input, exactly where another
+      // pre-step contributor's injected context sits. Match by id: a listener
+      // that replaced the claimed messages with copies keeps their ids.
+      const claimed = new Set(payload.messages.map((entry) => String(entry.id)))
+      let insertAt = payload.messages.length
+      for (let index = decision.messages.length - 1; index >= 0; index -= 1) {
+        if (claimed.has(String(decision.messages[index].id))) {
+          insertAt = index + 1
+          break
+        }
+      }
+      const messages = [...decision.messages.slice(0, insertAt), message, ...decision.messages.slice(insertAt)]
+      record.pendingRefresh = { messageId: String(message.id), next: probe }
+      return { ...decision, messages }
+    } catch (error) {
+      ctx.logger.warn(`dsh-note: cannot refresh the memory index: ${error instanceof Error ? error.message : String(error)}`)
+      return decision
+    }
   })
 
   // Shell-call scratchpad variable. Registered through a nested inject so a

@@ -15,6 +15,7 @@ export function makeContext(session, options = {}) {
   }
   if (options.llm !== undefined) optionalServices.llm = options.llm
 
+  const extraSessions = new Map(Object.entries(options.sessions ?? {}))
   const ctx = {
     logger: { debug() {}, info() {}, warn() {}, error() {} },
     effect(fn) {
@@ -37,10 +38,12 @@ export function makeContext(session, options = {}) {
     },
     sessions: {
       get(id) {
-        return String(id) === String(session.id) ? session : undefined
+        const key = String(id)
+        if (key === String(session.id)) return session
+        return extraSessions.get(key)
       },
       list() {
-        return [session]
+        return [session, ...extraSessions.values()]
       },
     },
     commands: {
@@ -85,10 +88,24 @@ export function makeContext(session, options = {}) {
     emit(event, ...args) {
       for (const fn of listeners.get(event) ?? []) fn(...args)
     },
+    /** Collect one waterfall's listeners and run them around a base decision. */
+    async waterfall(event, payload, base) {
+      const chain = listeners.get(event) ?? []
+      let index = -1
+      const next = async () => {
+        index += 1
+        const fn = chain[index]
+        if (fn === undefined) return base
+        return fn(payload, next)
+      }
+      return next()
+    },
     /** Agent double whose scoped context captures system-prompt sections. */
-    makeAgent(id) {
-      return {
+    makeAgent(id, overrides = {}) {
+      const agent = {
         id,
+        // Enough of a Session for cwd-keyed or session-keyed plugin behavior.
+        session: String(id) === String(session.id) ? session : { id, header: { cwd: session.header.cwd } },
         ctx: {
           inject(_deps, callback) {
             callback({
@@ -103,6 +120,7 @@ export function makeContext(session, options = {}) {
           },
         },
       }
+      return Object.assign(agent, overrides)
     },
   }
 }
