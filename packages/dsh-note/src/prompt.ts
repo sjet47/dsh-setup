@@ -46,7 +46,7 @@ Writing a memory file and updating this index are one atomic step: never create,
 
 The index is included below as a snapshot taken at session start. When a line looks relevant to the task at hand, read that file before acting on the topic; do not guess at its contents from the hook. Memories you write during this session will not appear in the snapshot; read \`<MEMORY_DIR>/MEMORY.md\` directly when you need the authoritative current list, and after context compaction before acting on past agreements.
 
-Changes to \`<MEMORY_DIR>/MEMORY.md\` made outside this session are announced at the start of your next turn, with the file's new content. Writes this session makes with the \`write\` or \`edit\` tool are usually not echoed back; a write through a shell command may be. Treat an announced change as a fresh read of the index: it supersedes the snapshot above.
+Changes to \`<MEMORY_DIR>/MEMORY.md\` made while this session is idle are announced at the start of your next turn, with the file's new content. Writes this session makes itself are not announced. Treat an announced change as a fresh read of the index: it supersedes the snapshot above.
 
 Before saving, check the index for an existing entry that already covers it. Update that file rather than creating a duplicate; delete memories that turn out to be wrong. Don't save what the repo already records (code structure, past fixes, git history, AGENTS.md) or what only matters to the current conversation; if asked to remember one of those, ask what was non-obvious about it and save that instead. Never save secrets or credentials. Memories reflect what was true when written — if one names a file, function, or flag, verify it still exists before recommending it.
 

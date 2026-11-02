@@ -35,23 +35,27 @@ The scratchpad is passed as an absolute path in that section and exported to she
 
 ## MEMORY.md refresh
 
-The frozen snapshot has one consequence: a memory another agent (pi, a sibling dsh session, your editor) writes mid-session stays invisible. The plugin closes that gap without giving up the stable prompt prefix.
+The frozen snapshot has one consequence: a memory another agent (pi, a sibling dsh session, your editor) writes while this session is idle stays invisible. The plugin closes that gap without giving up the stable prompt prefix.
 
-At the **first step of every turn** it probes `MEMORY.md`:
+The window it watches is **the end of the previous turn to the start of the next one**. When a turn ends it takes a baseline of `MEMORY.md`; at the first step of the next turn it probes the file again:
 
 1. `stat` first — an unchanged mtime/size means no read at all, so the common case is one syscall;
 2. once the metadata moved, the content digest decides whether anything really changed: a `touch`, or a byte-identical save by an editor, announces nothing;
-3. a real change enters the turn as one logged `user/message` right after the user's input — a `<system-reminder>` naming the file, listing the index lines that appeared or disappeared, and carrying the new index (capped at `memoryRefreshMaxChars`). Chat renders it as an expandable context row, like a workspace instruction update.
+3. a real change enters the turn as one logged `user/message` right after the user's input — a `<system-reminder>` naming the file, listing the index lines that appeared or disappeared, and carrying the new index (capped at `memoryRefreshMaxChars`).
 
-Because it is an ordinary message, it replays and resumes with the rest of the history and it never touches the system prompt. A change that arrives mid-turn is announced at the start of the next turn. Compaction may drop the announcement like any other message; the rules text already tells the agent to read `MEMORY.md` directly after compaction.
+Everything this session writes during its own turn is therefore part of the next baseline by construction, whatever tool or shell command produced it — there is no write hook and no per-tool bookkeeping. Only writes that land in the idle window are reported.
 
-The baseline only advances when the announcement is actually in the session log, so a step that is cancelled between pre-step and the append announces the change again next turn instead of losing it. A first step with no claimed input is left alone: injecting there would make the agent answer unprompted.
+The injected message is silent by design: its source carries only `kind: dsh-note`, no presentation form and no change list, so Chat shows the plain injected-context row it shows for any opaque context instead of a file card. The announcement is for the model, not for the reader.
 
-The session's **own** successful `write`, `edit` or `str_replace_editor` call on the index is adopted as the new baseline instead of being echoed back at it; a later external change still differs and is announced. Known blind spots:
+Because it is an ordinary message, it replays and resumes with the rest of the history and it never touches the system prompt. Compaction may drop it like any other message; the rules text already tells the agent to read `MEMORY.md` directly after compaction.
 
-1. writes through `bash`, from a subagent, or from another session are not recognised as this session's own, so the change is announced back to it — redundant but correct;
-2. only `MEMORY.md` is watched; editing a topic file without an index line announces nothing;
-3. the fast path hides a rewrite that preserves both mtime and size (`cp -p`, `git checkout` of an identical stat). Editing a same-length hook in place can therefore stay unnoticed until the next mtime change.
+The baseline only moves when the announcement actually reached the session log: if a turn is cancelled between pre-step and the append, that turn's baseline update is skipped and the next turn announces the change again. A first step with no claimed input is left alone — injecting there would make the agent answer unprompted.
+
+Known delays and blind spots:
+
+1. only `MEMORY.md` is watched: editing a topic file without an index line announces nothing;
+2. the fast path hides a rewrite that preserves both mtime and size (`cp -p`, `git checkout` of an identical stat), so a same-length hook can stay unnoticed until the next mtime change;
+3. a change is announced one turn late if the turn that first saw it was empty (no claimed input).
 
 ## UI
 

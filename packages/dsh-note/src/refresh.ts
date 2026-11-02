@@ -2,10 +2,15 @@
 //
 // The system-prompt block keeps a byte-stable MEMORY.md snapshot, which is what
 // makes the prompt prefix cacheable. That snapshot is frozen for the session, so
-// a memory another agent writes mid-session is invisible to this one. This
-// module supplies the other half: probe the file cheaply, notice when its
-// content really changed, and render one `<system-reminder>` message that names
-// the file and shows the new content.
+// a memory another agent writes while this one is idle is invisible. This module
+// supplies the other half: probe the file cheaply, notice when its content
+// really changed, and render one message that names the file and shows the new
+// content.
+//
+// The window is "the end of the previous turn to the start of the next one": the
+// caller takes a baseline when a turn ends and compares it when the next turn
+// starts, so everything this session wrote during its own turn is already part
+// of that baseline and needs no write tracking.
 //
 // Two independent inputs decide whether a change is real:
 // 1. mtime/size, the fast path — unchanged metadata means no read at all;
@@ -18,27 +23,19 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 
-/** Producer `kind` this plugin publishes for its own context messages. */
+/**
+ * Producer `kind` this plugin publishes for its own context messages.
+ *
+ * Deliberately the only field on the source: no `form` and no `changes` list, so
+ * Chat renders the message as an opaque injected-context row instead of a file
+ * card. The announcement is for the model, not for the reader.
+ */
 export const MEMORY_REFRESH_KIND = 'dsh-note'
 
-/** Change list published on the message source; Chat renders it as file rows. */
-export interface MemoryRefreshChange {
-  readonly action: 'set' | 'replace' | 'remove'
-  readonly path: string
-  readonly digest?: string
-}
-
-/** Wire shape of the `source` on one refresh message. */
-export interface MemoryRefreshSource {
-  readonly kind: typeof MEMORY_REFRESH_KIND
-  readonly form: 'instructions'
-  readonly changes: readonly MemoryRefreshChange[]
-}
-
-/** A rendered refresh message: model-facing text plus the source that describes it. */
+/** A rendered refresh message: model-facing text plus the source that produced it. */
 export interface MemoryRefresh {
   readonly text: string
-  readonly source: MemoryRefreshSource
+  readonly source: { readonly kind: typeof MEMORY_REFRESH_KIND }
 }
 
 /** MEMORY.md as last read: content plus the metadata that identifies that read. */
@@ -237,11 +234,10 @@ function lineBlock(title: string, lines: readonly string[], hidden: number): str
 }
 
 /**
- * Build the model-facing text and the source that describes one MEMORY.md
- * change: an update (replace), a first appearance (set), or a deletion
- * (remove). The text always names the file, says what the frozen snapshot means
- * now, and — for present content — carries the new index so the model can act
- * without another read.
+ * Build the model-facing text for one MEMORY.md change: an update, a first
+ * appearance, or a deletion. The text always names the file, says what the
+ * frozen snapshot means now, and — for present content — carries the new index
+ * so the model can act without another read.
  * @param input - observed transitions and the content budget.
  * @returns the rendered refresh.
  */
@@ -249,17 +245,15 @@ export function buildMemoryRefresh(input: MemoryRefreshInput): MemoryRefresh {
   const { indexPath, previous, current } = input
   const maxChars = Math.max(1, input.maxChars ?? DEFAULT_REFRESH_MAX_CHARS)
   const lines: string[] = ['<system-reminder>']
+  const source = { kind: MEMORY_REFRESH_KIND } as const
 
   if (current.kind === 'missing') {
     lines.push(
       `Memory index removed: ${indexPath}`,
       '',
-      'This file was deleted after this session started, so the snapshot in your system prompt is the last content it had. Read the memory directory if you need the current state; do not recreate the index unless the user asks.',
+      'This file was deleted while this session was idle, so the snapshot in your system prompt is the last content it had. Read the memory directory if you need the current state; do not recreate the index unless the user asks.',
     )
-    return {
-      text: escapeFrameBody(lines.join('\n')) + '\n</system-reminder>',
-      source: { kind: MEMORY_REFRESH_KIND, form: 'instructions', changes: [{ action: 'remove', path: indexPath }] },
-    }
+    return { text: escapeFrameBody(lines.join('\n')) + '\n</system-reminder>', source }
   }
 
   const created = previous.kind !== 'present'
@@ -273,7 +267,7 @@ export function buildMemoryRefresh(input: MemoryRefreshInput): MemoryRefresh {
     lines.push(
       `Updated memory: ${indexPath}`,
       '',
-      'This file changed since this session last saw it, so any earlier copy is stale — including the Memory index snapshot in your system prompt. Use the content below instead.',
+      'This file changed while this session was idle, so any earlier copy is stale — including the Memory index snapshot in your system prompt. Use the content below instead.',
     )
     const diff = diffIndexLines(previous.content, current.content)
     lines.push('', ...lineBlock('Added index lines:', diff.added, diff.addedHidden))
@@ -300,12 +294,5 @@ export function buildMemoryRefresh(input: MemoryRefreshInput): MemoryRefresh {
     lines.push(`Current MEMORY.md at ${indexPath}:`, '', body)
   }
 
-  return {
-    text: escapeFrameBody(lines.join('\n')) + '\n</system-reminder>',
-    source: {
-      kind: MEMORY_REFRESH_KIND,
-      form: 'instructions',
-      changes: [{ action: created ? 'set' : 'replace', path: indexPath, digest: current.digest }],
-    },
-  }
+  return { text: escapeFrameBody(lines.join('\n')) + '\n</system-reminder>', source }
 }

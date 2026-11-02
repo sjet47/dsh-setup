@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { statSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-commands'
@@ -140,14 +140,6 @@ function sessionCwd(ctx: Context, session: Session): string | undefined {
 }
 
 /**
- * Tools whose successful call means this session rewrote a file. The list is
- * deliberately narrow: a `bash` heredoc, a subagent, or another session writing
- * MEMORY.md is not recognised as this session's own, and the next turn then
- * announces that write back — still correct information, just redundant.
- */
-const SELF_WRITE_TOOLS = new Set(['write', 'edit', 'str_replace_editor'])
-
-/**
  * Build the durable user message that announces a memory-index change. It
  * enters through `agent/pre-step`, so it becomes an ordinary logged
  * `user/message`: it replays, compacts and resumes like the workspace
@@ -162,27 +154,6 @@ function refreshMessage(refresh: ReturnType<typeof buildMemoryRefresh>): UserMes
     content: [{ type: 'text', text: refresh.text }],
     source: refresh.source,
   } as unknown as UserMessage
-}
-
-/**
- * Absolute path a write/edit call targeted, when it named one. `~` is expanded
- * here because the fs backend expands it before touching the file, so an
- * untranslated spelling would never match the index path. `file_path` is the
- * file-tool argument; `path` is the string-replace editor's.
- * @param args - parsed tool arguments.
- * @param cwd - session working directory for relative paths.
- * @returns the resolved path, or undefined when the call named no file.
- */
-function touchedPath(args: unknown, cwd: string | undefined): string | undefined {
-  if (typeof args !== 'object' || args === null) return undefined
-  const record = args as { file_path?: unknown; path?: unknown }
-  const value = typeof record.file_path === 'string' ? record.file_path : record.path
-  if (typeof value !== 'string') return undefined
-  let trimmed = value.trim()
-  if (trimmed === '') return undefined
-  if (trimmed === '~' || trimmed.startsWith('~/')) trimmed = join(homedir(), trimmed.slice(1))
-  if (isAbsolute(trimmed)) return resolve(trimmed)
-  return cwd === undefined ? undefined : resolve(cwd, trimmed)
 }
 
 /**
@@ -272,48 +243,45 @@ export function apply(ctx: Context, config: Config = Config()): void {
     records.clear()
   })
 
-  // A successful write/edit of the index by this very session is adopted as the
-  // baseline instead of being announced back at it on the next turn. A later
-  // external change still differs from that adopted snapshot, so it is announced.
-  ctx.on('tools/result', (exec, result) => {
-    if (!config.enabled || !config.memoryRefresh || result.isError) return
-    if (!SELF_WRITE_TOOLS.has(exec.name)) return
-    const agent = exec.agent
-    if (agent === undefined) return
+  // The baseline advances at the end of a turn, not when the announcement is
+  // made: the window this feature watches is "the end of the previous turn to
+  // the start of the next one", so everything this session wrote during its own
+  // turn is absorbed into that baseline and needs no write tracking at all.
+  // A pending announcement suppresses the update, so a step abandoned before the
+  // message was logged re-announces the change next turn instead of losing it.
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'user/message') {
+      const messageId = String(event.data.id)
+      for (const record of records.values()) {
+        const pending = record.pendingRefresh
+        if (pending === undefined || pending.messageId !== messageId) continue
+        delete record.pendingRefresh
+        return
+      }
+      return
+    }
+    if (event.type !== 'turn/end') return
+    const record = records.get(String(session.id))
+    if (record === undefined || !config.memoryRefresh) return
     try {
-      const record = records.get(String(agent.id))
-      if (record === undefined) return
-      const target = touchedPath(exec.arguments, sessionCwd(ctx, agent.session))
-      if (target === undefined || target !== resolve(record.memoryIndex)) return
+      if (record.pendingRefresh !== undefined) {
+        // The refresh never reached the log; keep the old baseline so the next
+        // turn still sees the change.
+        delete record.pendingRefresh
+        return
+      }
       const probe = probeIndex(record.memoryIndex)
-      if (probe.kind === 'unstable') return
-      record.trackedIndex = probe
-      // A refresh rendered for the previous content is superseded, not stale.
-      delete record.pendingRefresh
+      if (probe.kind !== 'unstable') record.trackedIndex = probe
     } catch (error) {
       ctx.logger.warn(`dsh-note: cannot re-baseline the memory index: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
 
-  // The baseline advances only once the refresh message is in the log. A step
-  // abandoned between pre-step and the append (abort, a rejecting listener) then
-  // announces the change again next turn instead of dropping it.
-  ctx.on('session/event', (session, event) => {
-    if (event.type !== 'user/message') return
-    const messageId = String(event.data.id)
-    for (const record of records.values()) {
-      const pending = record.pendingRefresh
-      if (pending === undefined || pending.messageId !== messageId) continue
-      record.trackedIndex = pending.next
-      delete record.pendingRefresh
-      return
-    }
-  })
-
   // MEMORY.md is frozen into the system prompt at session start, so a memory
-  // another agent writes would stay invisible. Check it once per turn — at the
-  // first pre-step — and hand the new content over as one logged user message.
-  // mtime/size make the check a single stat; the digest keeps a `touch` quiet.
+  // another agent writes while this session is idle would stay invisible. At the
+  // first pre-step of a turn, compare against the snapshot taken when the last
+  // turn ended and hand any change over as one logged user message. mtime/size
+  // make the check a single stat; the digest keeps a `touch` quiet.
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     if (!config.enabled || !config.memoryRefresh) return decision
@@ -330,7 +298,7 @@ export function apply(ctx: Context, config: Config = Config()): void {
       if (probe.kind === 'unstable') return decision
       const previous = record.trackedIndex
       if (previous === undefined || sameIndex(previous, probe)) {
-        // First usable observation, or the same memory under a new mtime.
+        // Nothing changed while idle, or the same memory under a new mtime.
         record.trackedIndex = probe
         return decision
       }

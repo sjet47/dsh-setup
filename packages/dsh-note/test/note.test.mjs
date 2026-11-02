@@ -236,15 +236,29 @@ function preStep(harness, agent, { step = 1, claimed, withContext = true } = {})
   return harness.waterfall('agent/pre-step', payload, { kind: 'enter', messages: base })
 }
 
-/**
- * Log the entered step the way the loop does. The refresh baseline only
- * advances here, so a step that is never logged is announced again later.
- */
+/** Log the entered step the way the loop does. */
 function logStep(harness, agent, decision) {
   for (const message of decision.messages) {
     if (message.source.kind === 'runtime-context') continue
     harness.emit('session/event', agent.session, { type: 'user/message', data: message })
   }
+}
+
+/** Close a turn: the plugin takes its MEMORY.md baseline here. */
+function turnEnd(harness, agent, session = agent.session) {
+  harness.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+}
+
+/**
+ * One complete turn: probe, log what entered, optionally write something during
+ * the turn, then close it.
+ */
+async function runTurn(harness, agent, duringTurn) {
+  const decision = await preStep(harness, agent)
+  logStep(harness, agent, decision)
+  if (duringTurn !== undefined) duringTurn()
+  turnEnd(harness, agent)
+  return decision
 }
 
 /** The refresh messages one decision carries. */
@@ -257,23 +271,18 @@ function externalWrite(text) {
   writeFileSync(memoryIndex, text, 'utf8')
 }
 
-/** Simulate a successful write/edit call from a given agent. */
-function emitWrite(harness, agent, args, name = 'write', isError = false) {
-  const payload = typeof args === 'string' ? { file_path: args } : args
-  harness.emit('tools/result', { agent, name, arguments: payload }, { isError })
-}
-
 test('the config exposes the refresh defaults', () => {
   const defaults = Config()
   assert.equal(defaults.memoryRefresh, true)
   assert.equal(defaults.memoryRefreshMaxChars, 16_000)
 })
 
-test('a MEMORY.md change is announced at the next turn’s first step', async () => {
+test('a change made while idle is announced at the next turn’s first step', async () => {
   const harness = makeContext(session)
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent) // turn 1: nothing changed yet
 
   externalWrite('- [Fresh](fresh.md) — write it down\n- [Kept](kept.md) — still here\n')
   const decision = await preStep(harness, agent)
@@ -285,11 +294,8 @@ test('a MEMORY.md change is announced at the next turn’s first step', async ()
   assert.deepEqual(refreshOf(decision), [decision.messages[1]])
   const message = decision.messages[1]
   assert.equal(message.role, 'user')
-  assert.equal(message.source.kind, 'dsh-note')
-  assert.equal(message.source.form, 'instructions')
-  assert.equal(message.source.changes.length, 1)
-  assert.equal(message.source.changes[0].action, 'replace')
-  assert.equal(message.source.changes[0].path, memoryIndex)
+  // No `form` and no change list: the message is for the model, not the reader.
+  assert.deepEqual(message.source, { kind: 'dsh-note' })
   const text = message.content[0].text
   assert.match(text, /^<system-reminder>/)
   assert.ok(text.endsWith('</system-reminder>'))
@@ -299,9 +305,38 @@ test('a MEMORY.md change is announced at the next turn’s first step', async ()
   assert.ok(text.includes('- [Kept](kept.md) — still here'))
   assert.ok(text.includes(`Current MEMORY.md at ${memoryIndex}:`))
 
-  // Once logged, the same change is not announced again.
+  // Once that turn closes, the change is absorbed and not announced again.
   logStep(harness, agent, decision)
+  turnEnd(harness, agent)
   assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
+})
+
+test('writes during the session’s own turn are never announced back at it', async () => {
+  const harness = makeContext(session)
+  apply(harness.ctx)
+  const agent = harness.makeAgent('session-note')
+  harness.emit('agent/created', { agent })
+
+  // Written with whatever tool or shell command: it happens inside turn 1.
+  const decision = await runTurn(harness, agent, () => externalWrite('- [Mine](mine.md) — written mid-turn\n'))
+  assert.deepEqual(refreshOf(decision), [])
+  // Turn 1 closed with the new content as the baseline, so turn 2 is quiet.
+  assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
+})
+
+test('only the idle window is watched, not the previous turn itself', async () => {
+  const harness = makeContext(session)
+  apply(harness.ctx)
+  const agent = harness.makeAgent('session-note')
+  harness.emit('agent/created', { agent })
+
+  await runTurn(harness, agent, () => externalWrite('- [In](in.md) — during turn 1\n'))
+  externalWrite('- [In](in.md) — during turn 1\n- [Idle](idle.md) — while idle\n')
+  const decision = await preStep(harness, agent)
+  assert.equal(refreshOf(decision).length, 1)
+  const text = refreshOf(decision)[0].content[0].text
+  assert.ok(text.includes('- [Idle](idle.md) — while idle'))
+  assert.ok(!text.includes('Added index lines:\n- [In](in.md)'))
 })
 
 test('an abandoned step announces the change again instead of losing it', async () => {
@@ -309,15 +344,18 @@ test('an abandoned step announces the change again instead of losing it', async 
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Now](now.md) — the step was cancelled\n')
   const aborted = await preStep(harness, agent)
   assert.equal(refreshOf(aborted).length, 1)
-  // The abort happens between pre-step and the append: nothing is logged.
+  // The abort happens between pre-step and the append, so nothing is logged.
+  turnEnd(harness, agent)
   const retried = await preStep(harness, agent)
   assert.equal(refreshOf(retried).length, 1)
   assert.notEqual(refreshOf(retried)[0].id, refreshOf(aborted)[0].id)
   logStep(harness, agent, retried)
+  turnEnd(harness, agent)
   assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
 })
 
@@ -326,6 +364,7 @@ test('a first step with no claimed input is not turned into a model step', async
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Later](later.md) — nobody asked anything yet\n')
   assert.deepEqual(refreshOf(await preStep(harness, agent, { claimed: [] })), [])
@@ -340,9 +379,8 @@ test('a rewrite that keeps the content does not announce anything', async () => 
   harness.emit('agent/created', { agent })
 
   externalWrite('- [Stable](stable.md) — untouched\n')
-  const decision = await preStep(harness, agent)
-  assert.equal(refreshOf(decision).length, 1) // the change itself is real
-  logStep(harness, agent, decision)
+  const decision = await runTurn(harness, agent) // the change itself is real
+  assert.equal(refreshOf(decision).length, 1)
   // A `touch`-style rewrite: same bytes, newer mtime.
   const later = new Date(Date.now() + 5_000)
   utimesSync(memoryIndex, later, later)
@@ -355,72 +393,11 @@ test('a change made mid-turn is announced at the next turn, not mid-turn', async
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Late](late.md) — arrived mid-turn\n')
   assert.deepEqual(refreshOf(await preStep(harness, agent, { step: 3 })), [])
   assert.equal(refreshOf(await preStep(harness, agent)).length, 1)
-})
-
-test('the session’s own write is adopted instead of echoed back', async () => {
-  const harness = makeContext(session)
-  apply(harness.ctx)
-  const agent = harness.makeAgent('session-note')
-  harness.emit('agent/created', { agent })
-
-  externalWrite('- [Mine](mine.md) — written by this session\n')
-  emitWrite(harness, agent, memoryIndex)
-  assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
-
-  // An external change after that write is still announced.
-  externalWrite('- [Mine](mine.md) — written by this session\n- [Other](other.md) — written by pi\n')
-  const decision = await preStep(harness, agent)
-  assert.equal(refreshOf(decision).length, 1)
-  assert.ok(refreshOf(decision)[0].content[0].text.includes('- [Other](other.md) — written by pi'))
-})
-
-test('edit and the string-replace editor also count as the session’s own write', async () => {
-  const harness = makeContext(session)
-  apply(harness.ctx)
-  const agent = harness.makeAgent('session-note')
-  harness.emit('agent/created', { agent })
-
-  externalWrite('- [Edited](edited.md) — via edit\n')
-  emitWrite(harness, agent, memoryIndex, 'edit')
-  assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
-
-  externalWrite('- [Edited](edited.md) — via the editor\n')
-  emitWrite(harness, agent, { path: memoryIndex }, 'str_replace_editor')
-  assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
-})
-
-test('a failed write, another file and a relative path are all handled', async () => {
-  const harness = makeContext(session)
-  apply(harness.ctx)
-  const agent = harness.makeAgent('session-note')
-  harness.emit('agent/created', { agent })
-
-  // A failed write changed nothing, so the real change is still announced.
-  externalWrite('- [Failed](failed.md) — the write errored\n')
-  emitWrite(harness, agent, memoryIndex, 'write', true)
-  assert.equal(refreshOf(await preStep(harness, agent)).length, 1)
-
-  // Writing some other file does not move the baseline.
-  emitWrite(harness, agent, join(memoryDir, 'topic.md'))
-  const other = await preStep(harness, agent)
-  logStep(harness, agent, other)
-  externalWrite('- [Failed](failed.md) — the write errored\n- [Topic](topic.md) — a topic changed\n')
-  assert.equal(refreshOf(await preStep(harness, agent)).length, 1)
-})
-
-test('a relative write path is recognised as the memory index', async () => {
-  const harness = makeContext(session)
-  apply(harness.ctx)
-  const agent = harness.makeAgent('session-note')
-  harness.emit('agent/created', { agent })
-  externalWrite('- [Rel](rel.md) — relative write\n')
-  // Tools may pass a path relative to the session working directory.
-  emitWrite(harness, agent, relative(project, memoryIndex))
-  assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
 })
 
 test('a deleted memory index is announced as removed', async () => {
@@ -428,12 +405,12 @@ test('a deleted memory index is announced as removed', async () => {
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   rmSync(memoryIndex, { force: true })
   const decision = await preStep(harness, agent)
   assert.equal(refreshOf(decision).length, 1)
   assert.match(refreshOf(decision)[0].content[0].text, /Memory index removed:/)
-  assert.equal(refreshOf(decision)[0].source.changes[0].action, 'remove')
 })
 
 test('an index that appears after a removal is announced as created', async () => {
@@ -441,16 +418,15 @@ test('an index that appears after a removal is announced as created', async () =
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   rmSync(memoryIndex, { force: true })
-  const removed = await preStep(harness, agent)
+  const removed = await runTurn(harness, agent)
   assert.match(refreshOf(removed)[0].content[0].text, /Memory index removed:/)
-  logStep(harness, agent, removed)
   externalWrite('- [Back](back.md) — recreated index\n')
   const decision = await preStep(harness, agent)
   assert.equal(refreshOf(decision).length, 1)
   assert.match(refreshOf(decision)[0].content[0].text, /Memory index created:/)
-  assert.equal(refreshOf(decision)[0].source.changes[0].action, 'set')
 })
 
 test('an unreadable index is skipped instead of guessed at', async () => {
@@ -458,6 +434,7 @@ test('an unreadable index is skipped instead of guessed at', async () => {
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   rmSync(memoryIndex, { force: true })
   mkdirSync(memoryIndex, { recursive: true })
@@ -473,6 +450,7 @@ test('the announced content is capped at the configured budget', async () => {
   apply(harness.ctx, { enabled: true, snapshotMaxChars: 16_000, maxBodyBytes: 1024 * 1024, memoryRefresh: true, memoryRefreshMaxChars: 40 })
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite(`- [Long](long.md) — ${'x'.repeat(300)}\n`)
   const decision = await preStep(harness, agent)
@@ -487,6 +465,7 @@ test('the refresh can be switched off independently of the rest', async () => {
   apply(harness.ctx, { enabled: true, snapshotMaxChars: 16_000, maxBodyBytes: 1024 * 1024, memoryRefresh: false, memoryRefreshMaxChars: 16_000 })
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Off](off.md) — refresh disabled\n')
   assert.deepEqual(refreshOf(await preStep(harness, agent)), [])
@@ -500,14 +479,30 @@ test('each agent tracks the index on its own', async () => {
   const second = harness.makeAgent('session-other')
   harness.emit('agent/created', { agent: first })
   harness.emit('agent/created', { agent: second })
+  await runTurn(harness, first)
+  await runTurn(harness, second)
 
   externalWrite('- [Shared](shared.md) — one file, two sessions\n')
   const decided = await preStep(harness, first)
   assert.equal(refreshOf(decided).length, 1)
   logStep(harness, first, decided)
+  turnEnd(harness, first)
   // The first session is up to date; the second still has not been told.
   assert.deepEqual(refreshOf(await preStep(harness, first)), [])
   assert.equal(refreshOf(await preStep(harness, second)).length, 1)
+})
+
+test('another session’s turn end does not move this session’s baseline', async () => {
+  const other = { id: 'session-other', header: { cwd: project } }
+  const harness = makeContext(session, { sessions: { 'session-other': other } })
+  apply(harness.ctx)
+  const agent = harness.makeAgent('session-note')
+  harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
+
+  externalWrite('- [Waiting](waiting.md) — announced after someone else’s turn\n')
+  turnEnd(harness, agent, other)
+  assert.equal(refreshOf(await preStep(harness, agent)).length, 1)
 })
 
 test('a pre-step listener that clones the claimed messages keeps the order', async () => {
@@ -520,6 +515,7 @@ test('a pre-step listener that clones the claimed messages keeps the order', asy
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Clone](clone.md) — messages were cloned\n')
   const decision = await preStep(harness, agent)
@@ -532,6 +528,7 @@ test('a reloaded plugin adopts the current index instead of announcing it', asyn
   apply(harness.ctx)
   const agent = harness.makeAgent('session-note')
   harness.emit('agent/created', { agent })
+  await runTurn(harness, agent)
 
   externalWrite('- [Reload](reload.md) — written while the plugin was unloaded\n')
   await harness.disposeAll() // drops the records, like an unload/HMR
