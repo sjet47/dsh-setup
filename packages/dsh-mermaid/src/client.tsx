@@ -187,7 +187,10 @@ async function requestDiagrams(sources: readonly string[]): Promise<readonly Ren
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sources: sources.map((source) => ({ source })) }),
   })
-  if (!response.ok) throw new Error(`status:${response.status}`)
+  if (!response.ok) {
+    await response.body?.cancel()
+    throw new Error(`status:${response.status}`)
+  }
   const payload = (await response.json()) as { enabled?: boolean; results?: unknown }
   if (payload.enabled === false) throw new Error('status:disabled')
   const results = payload.results
