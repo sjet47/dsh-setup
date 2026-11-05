@@ -154,7 +154,11 @@ async function readState(sessionId: string): Promise<RecapWire | undefined> {
     const response = await fetch(`/api/dsh-recap/state?session=${encodeURIComponent(sessionId)}`, {
       credentials: 'same-origin',
     })
-    if (!response.ok) return undefined
+    if (!response.ok) {
+      // This runs on a poll, and an unconsumed body pins its pipe for good.
+      await response.body?.cancel()
+      return undefined
+    }
     return (await response.json()) as RecapWire
   } catch {
     return undefined
@@ -654,7 +658,10 @@ function RecapBundleConfig({ view, locale }: { view: 'summary' | 'page'; locale:
   const loadPreferences = useCallback(async (): Promise<void> => {
     try {
       const response = await fetch('/api/dsh-recap/preferences', { credentials: 'same-origin' })
-      if (!response.ok) return
+      if (!response.ok) {
+        await response.body?.cancel()
+        return
+      }
       const payload = (await response.json()) as Preferences
       setRefreshStale(payload.refreshStale)
     } catch {
