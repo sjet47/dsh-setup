@@ -183,6 +183,69 @@ test('each tick reports what this page shows before asking for a claim', async (
   }
 })
 
+/**
+ * Install a fetch double whose responses record whether their body was released.
+ *
+ * Electron never frees the shared-memory pipe of a streamed body nobody consumed,
+ * so every poll has to read or cancel what it gets back.
+ * @param claimOk - whether the claim route answers 2xx.
+ * @returns the bodies handed out by path, and a restore function.
+ */
+function installBodyTrackingFetch(claimOk) {
+  const bodies = new Map()
+  const previous = globalThis.fetch
+  globalThis.fetch = async (path) => {
+    const body = { cancelled: 0, cancel: async () => { body.cancelled += 1 } }
+    bodies.set(path, body)
+    const ok = path === '/api/dsh-notify/presence' || claimOk
+    return { ok, body, json: async () => ({ sessionId: null }) }
+  }
+  return {
+    bodies,
+    restore() {
+      globalThis.fetch = previous
+    },
+  }
+}
+
+test('the presence reply is discarded instead of left to pin its pipe', async () => {
+  const dom = installDomDoubles()
+  const net = installBodyTrackingFetch(true)
+  const effects = []
+  try {
+    const client = loadClient(dom.pageWindow)
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: () => {} }, effect: (run) => effects.push(run()) },
+      { sessions: catalog(['session-shown']) },
+    ))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(net.bodies.get('/api/dsh-notify/presence').cancelled, 1)
+  } finally {
+    for (const dispose of effects) dispose()
+    net.restore()
+    dom.restore()
+  }
+})
+
+test('a refused claim discards its body too', async () => {
+  const dom = installDomDoubles()
+  const net = installBodyTrackingFetch(false)
+  const effects = []
+  try {
+    const client = loadClient(dom.pageWindow)
+    client.apply(clientCtx(
+      { uiWorkspace: { openSession: () => {} }, effect: (run) => effects.push(run()) },
+      { sessions: catalog(['session-shown']) },
+    ))
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(net.bodies.get('/api/dsh-notify/claim').cancelled, 1)
+  } finally {
+    for (const dispose of effects) dispose()
+    net.restore()
+    dom.restore()
+  }
+})
+
 test('an idle claim does not switch sessions', async () => {
   const dom = installDomDoubles()
   const net = installFetch({ sessionId: null })

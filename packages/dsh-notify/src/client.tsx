@@ -204,15 +204,22 @@ function start(ctx: Context): void {
    *
    * Fire and forget: the Host only uses the newest report to decide whether a
    * finished run is already on screen, so a lost one costs one notification.
+   *
+   * The reply says nothing the page needs, but it must still be discarded. The
+   * Desktop streams it through a shared-memory pipe that stays open until the
+   * body is consumed, and garbage collection does not reclaim it. Left unread,
+   * this poll fills the renderer's 1024 descriptors in half an hour; Chromium's
+   * IPC then stalls for good and the page freezes.
    */
   const reportPresence = async (): Promise<void> => {
     try {
-      await fetch(PRESENCE_PATH, {
+      const response = await fetch(PRESENCE_PATH, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { accept: 'application/json', 'content-type': 'application/json' },
         body: JSON.stringify(presenceOf(sessions)),
       })
+      await response.body?.cancel()
     } catch {
       // The Host may be restarting; the next tick reports again.
     }
@@ -241,6 +248,7 @@ function start(ctx: Context): void {
       } else {
         // 401/404 means the Host half is not there, so there is nothing to
         // claim; keep looking, but stop asking every two seconds.
+        await response.body?.cancel()
         delay = IDLE_POLL_MS
       }
     } catch {
