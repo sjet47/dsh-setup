@@ -147,6 +147,8 @@ function createChip(locale: LocaleRuntime) {
             schedule(Math.max(MIN_POLL_MS, value.refreshMs ?? DEFAULT_POLL_MS))
             return
           }
+          // This runs on a poll, and an unconsumed body pins its pipe for good.
+          await response.body?.cancel()
         } catch {
           // Offline or a torn-down host: keep the previous chip and retry.
         }
