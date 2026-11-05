@@ -346,7 +346,10 @@ function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): R
       const response = await fetch(`/api/dsh-note/list?session=${encodeURIComponent(sessionId)}`, {
         credentials: 'same-origin',
       })
-      if (!response.ok) throw new Error(t('dialog.listFailed', { status: response.status }))
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw new Error(t('dialog.listFailed', { status: response.status }))
+      }
       setList((await response.json()) as ListPayload)
       setError(undefined)
     } catch (cause) {
@@ -400,6 +403,7 @@ function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): R
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ file: selected.file }),
       })
+      await response.body?.cancel()
       if (!response.ok) throw new Error(t('dialog.deleteFailed', { status: response.status }))
       setSelected(undefined)
       setBody(undefined)
@@ -689,7 +693,10 @@ function MemoryAction({ sessionId, locale }: { sessionId: string; locale: Locale
         const response = await fetch(`/api/dsh-note/list?session=${encodeURIComponent(sessionId)}`, {
           credentials: 'same-origin',
         })
-        if (!response.ok) return
+        if (!response.ok) {
+          await response.body?.cancel()
+          return
+        }
         const payload = (await response.json()) as ListPayload
         if (!live) return
         setEnabled(payload.enabled !== false)
