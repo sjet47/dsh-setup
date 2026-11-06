@@ -24,13 +24,21 @@ import {
   ciFromGitlabCommit,
   detectForge,
   GITHUB_PR_FIELDS,
+  GITHUB_REPO_FIELDS,
+  githubLogin,
+  githubRemoteRepos,
+  githubRepoInfo,
   gitlabApiPath,
   gitlabCommitPath,
+  GITLAB_PROJECT_PATH,
+  gitlabRepoInfo,
   normalizeGithub,
   normalizeGitlab,
   parseRemoteUrls,
+  type CheckoutInfo,
   type Forge,
   type MrInfo,
+  type RepoInfo,
 } from './forge.js'
 import { renderMrDetail } from './format.js'
 
@@ -115,6 +123,17 @@ function sessionCwd(ctx: Context, sessionId: string): string | undefined {
   return session.header.cwd
 }
 
+/** Facts about the checkout that a by-branch request lookup cannot carry. */
+interface RepositoryFacts extends RepoInfo {
+  /** `owner/name` of every GitHub remote, lowercased. */
+  repos?: string[]
+}
+
+/** Cached forge detection, plus the repository facts the request lookup needs. */
+interface ForgeLookup extends RepositoryFacts {
+  forge: Forge
+}
+
 /**
  * Install the plugin: one `/mr` command, one authenticated status route, and a
  * per-session cache shared by both.
@@ -124,7 +143,32 @@ function sessionCwd(ctx: Context, sessionId: string): string | undefined {
 export function apply(ctx: Context, config: Config = Config()): void {
   const cache = new Map<string, { branch: string; at: number; status: MrStatus }>()
   const inflight = new Map<string, Promise<MrStatus>>()
-  const forgeCache = new Map<string, { at: number; value: Promise<Forge | undefined> }>()
+  const forgeCache = new Map<string, { at: number; value: Promise<ForgeLookup | undefined> }>()
+
+  /**
+   * Probe the repository-level facts a by-branch lookup cannot express: the
+   * default branch, and on GitHub which repositories this checkout may push to.
+   * Best effort — an unanswered probe only costs the suppression rules, so the
+   * request itself is still shown.
+   */
+  async function describeRepository(cwd: string, forge: Forge, urls: string[]): Promise<RepositoryFacts> {
+    if (forge === 'gitlab') {
+      const res = await run('glab', ['api', GITLAB_PROJECT_PATH], cwd, CLI_TIMEOUT_MS)
+      return res.code === 0 ? gitlabRepoInfo(parseJson(res.stdout)) : {}
+    }
+    const [repoRes, loginRes] = await Promise.all([
+      run('gh', ['repo', 'view', '--json', GITHUB_REPO_FIELDS], cwd, CLI_TIMEOUT_MS),
+      // A local config read, so it costs a fork of the process rather than a
+      // network round trip. The login is how an own-fork pull request is told
+      // apart from a stranger's fork of the same branch name.
+      run('gh', ['config', 'get', '-h', 'github.com', 'user'], cwd, GIT_TIMEOUT_MS),
+    ])
+    return {
+      repos: githubRemoteRepos(urls),
+      ...(repoRes.code === 0 ? githubRepoInfo(parseJson(repoRes.stdout)) : {}),
+      ...(loginRes.code === 0 ? { login: githubLogin(loginRes.stdout) } : {}),
+    }
+  }
 
   /**
    * Resolve the forge once per working directory. The promise itself is cached
@@ -132,14 +176,17 @@ export function apply(ctx: Context, config: Config = Config()): void {
    * instead of observing a half-initialized state; a rejected lookup is
    * dropped so the next call retries.
    */
-  function resolveForge(cwd: string): Promise<Forge | undefined> {
+  function resolveForge(cwd: string): Promise<ForgeLookup | undefined> {
     const now = Date.now()
     const cached = forgeCache.get(cwd)
     if (cached !== undefined && now - cached.at < FORGE_TTL_MS) return cached.value
-    const value = (async (): Promise<Forge | undefined> => {
+    const value = (async (): Promise<ForgeLookup | undefined> => {
       const res = await run('git', ['config', '--get-regexp', '^remote\\..*\\.url$'], cwd, GIT_TIMEOUT_MS)
       if (res.code !== 0) return undefined
-      return detectForge(parseRemoteUrls(res.stdout))
+      const urls = parseRemoteUrls(res.stdout)
+      const forge = detectForge(urls)
+      if (forge === undefined) return undefined
+      return { forge, ...(await describeRepository(cwd, forge, urls)) }
     })()
     forgeCache.set(cwd, { at: now, value })
     value.catch(() => {
@@ -154,22 +201,22 @@ export function apply(ctx: Context, config: Config = Config()): void {
     if (res.code === 0) info.ci = ciFromGitlabCommit(parseJson(res.stdout))
   }
 
-  async function queryForge(cwd: string, forge: Forge, branch: string): Promise<MrInfo | undefined> {
+  async function queryForge(cwd: string, forge: Forge, checkout: CheckoutInfo): Promise<MrInfo | undefined> {
     if (forge === 'gitlab') {
-      const res = await run('glab', ['api', gitlabApiPath(branch)], cwd, CLI_TIMEOUT_MS)
+      const res = await run('glab', ['api', gitlabApiPath(checkout.branch)], cwd, CLI_TIMEOUT_MS)
       if (res.code !== 0) throw new Error(res.stderr.trim() || `glab exited ${res.code}`)
-      const info = normalizeGitlab(parseJson(res.stdout))
+      const info = normalizeGitlab(parseJson(res.stdout), checkout)
       if (info !== undefined && info.ci === 'none') await fillGitlabCi(cwd, info)
       return info
     }
     const res = await run(
       'gh',
-      ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '5', '--json', GITHUB_PR_FIELDS],
+      ['pr', 'list', '--head', checkout.branch, '--state', 'all', '--limit', '5', '--json', GITHUB_PR_FIELDS],
       cwd,
       CLI_TIMEOUT_MS,
     )
     if (res.code !== 0) throw new Error(res.stderr.trim() || `gh exited ${res.code}`)
-    return normalizeGithub(parseJson(res.stdout))
+    return normalizeGithub(parseJson(res.stdout), checkout)
   }
 
   /** Refresh one session's status, coalescing concurrent readers. */
@@ -178,11 +225,17 @@ export function apply(ctx: Context, config: Config = Config()): void {
     if (existing !== undefined) return existing
     const task = (async (): Promise<MrStatus> => {
       const status: MrStatus = { cwd, branch, forge: null, info: null, fetchedAt: Date.now() }
-      const forge = await resolveForge(cwd)
-      if (forge === undefined) return status
-      status.forge = forge
+      const lookup = await resolveForge(cwd)
+      if (lookup === undefined) return status
+      status.forge = lookup.forge
+      const checkout: CheckoutInfo = {
+        branch,
+        defaultBranch: lookup.defaultBranch,
+        repos: lookup.repos,
+        login: lookup.login,
+      }
       try {
-        status.info = (await queryForge(cwd, forge, branch)) ?? null
+        status.info = (await queryForge(cwd, lookup.forge, checkout)) ?? null
       } catch (error) {
         status.error = error instanceof Error ? error.message : String(error)
       }
