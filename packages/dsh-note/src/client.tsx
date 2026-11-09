@@ -29,9 +29,9 @@ const NS = 'dsh-note'
 /** Copy registered into the Client locale service (see `locale/*.json`). */
 const EN: Record<string, string> = {
   'action.label': 'Memory',
-  'action.title': 'Project memory shared with pi',
+  'action.title': 'Project memory shared with Claude Code and pi',
   'dialog.title': 'Memory',
-  'dialog.subtitle': '{label} · {count} topics · shared with pi',
+  'dialog.subtitle': '{label} · {count} topics · shared with Claude Code and pi',
   'dialog.search': 'Search title, file or hook',
   'dialog.disabled': 'dsh-note is disabled in this profile.',
   'dialog.empty': 'No memories for this project yet.',

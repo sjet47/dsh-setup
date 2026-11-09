@@ -1,7 +1,7 @@
 {
   "name": "dsh-note",
   "version": "0.1.0",
-  "description": "Project-level file-based memory shared with pi-note, plus a per-session scratchpad, for dsh",
+  "description": "Project-level file-based memory shared with Claude Code and pi, plus a per-session scratchpad, for dsh",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

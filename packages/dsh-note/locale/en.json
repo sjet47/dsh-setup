@@ -1,15 +1,15 @@
 {
   "meta": {
     "title": "Project Memory",
-    "description": "Project memory shared with pi, a per-session scratchpad, and a memory browser."
+    "description": "Project memory shared with Claude Code and pi, a per-session scratchpad, and a memory browser."
   },
   "action": {
     "label": "Memory",
-    "title": "Project memory shared with pi"
+    "title": "Project memory shared with Claude Code and pi"
   },
   "dialog": {
     "title": "Memory",
-    "subtitle": "{label} · {count} topics · shared with pi",
+    "subtitle": "{label} · {count} topics · shared with Claude Code and pi",
     "search": "Search title, file or hook",
     "disabled": "dsh-note is disabled in this profile.",
     "empty": "No memories for this project yet.",

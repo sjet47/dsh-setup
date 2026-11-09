@@ -345,7 +345,7 @@ export function apply(ctx: Context, config: Config = Config()): void {
   ctx.effect(() =>
     ctx.commands.register({
       name: 'memory',
-      description: "Open this project's memory browser (shared with pi)",
+      description: "Open this project's memory browser (shared with Claude Code and pi)",
       handler: (invocation) => {
         if (!config.enabled) return { kind: 'success', text: 'dsh-note is disabled in this profile.' }
         const sessionId = String(invocation.agent.id)

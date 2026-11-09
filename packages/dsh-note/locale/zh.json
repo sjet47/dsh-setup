@@ -1,15 +1,15 @@
 {
   "meta": {
     "title": "项目记忆",
-    "description": "与 pi 共享的项目记忆、按会话隔离的草稿目录，以及记忆浏览面板。"
+    "description": "与 Claude Code、pi 共享的项目记忆、按会话隔离的草稿目录，以及记忆浏览面板。"
   },
   "action": {
     "label": "记忆",
-    "title": "与 pi 共享的项目记忆"
+    "title": "与 Claude Code、pi 共享的项目记忆"
   },
   "dialog": {
     "title": "记忆",
-    "subtitle": "{label} · {count} 条 · 与 pi 共享",
+    "subtitle": "{label} · {count} 条 · 与 Claude Code、pi 共享",
     "search": "搜索标题、文件或记忆钩子",
     "disabled": "dsh-note 在当前 profile 中被禁用。",
     "empty": "这个项目还没有记忆。",
