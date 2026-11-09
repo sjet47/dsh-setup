@@ -95,6 +95,14 @@ interface TopicWire {
   exists: boolean
   size?: number
   mtimeMs?: number
+  /** `metadata.type` — Claude Code's recall category. */
+  type?: string
+  /** Frontmatter `description` — the line Claude Code recall matches on. */
+  description?: string
+  /** `metadata.modified` when it parses, else the file mtime. */
+  modifiedMs?: number
+  /** False for a file with no frontmatter block, which recall cannot reach. */
+  hasFrontmatter?: boolean
 }
 
 function toWire(topic: MemoryTopic): TopicWire {
@@ -106,6 +114,10 @@ function toWire(topic: MemoryTopic): TopicWire {
     exists: topic.exists,
     ...(topic.size === undefined ? {} : { size: topic.size }),
     ...(topic.mtimeMs === undefined ? {} : { mtimeMs: topic.mtimeMs }),
+    ...(topic.type === undefined ? {} : { type: topic.type }),
+    ...(topic.description === undefined ? {} : { description: topic.description }),
+    ...(topic.modifiedMs === undefined ? {} : { modifiedMs: topic.modifiedMs }),
+    hasFrontmatter: topic.hasFrontmatter ?? false,
   }
 }
 

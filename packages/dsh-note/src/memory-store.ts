@@ -3,10 +3,18 @@
 // `deleteTopic` (the panel's confirmed delete): it removes the memory file and
 // its MEMORY.md line, and nothing else — editing a memory is still the agent's
 // or the external editor's job, and the index itself is never deletable.
-import { readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readdirSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { MEMORY_INDEX_NAME } from "./paths.js";
-import { buildTopics, removeIndexEntry, type MemoryFileInfo, type MemoryTopic } from "./memory-index.js";
+import {
+	buildTopics,
+	parseModified,
+	removeIndexEntry,
+	splitFrontmatter,
+	type MemoryFileInfo,
+	type MemoryFileMeta,
+	type MemoryTopic,
+} from "./memory-index.js";
 
 /**
  * Every regular file in the memory dir, with the size and mtime the browser
@@ -47,7 +55,57 @@ export function loadTopics(memoryDir: string): MemoryTopic[] {
 		// No MEMORY.md yet: every file in the dir becomes an orphan row.
 		indexText = "";
 	}
-	return buildTopics(indexText, listMemoryFiles(memoryDir));
+	const files = listMemoryFiles(memoryDir);
+	return buildTopics(indexText, files, loadMeta(memoryDir, files));
+}
+
+/** Bytes read from the head of a memory file to reach its frontmatter block. */
+const FRONTMATTER_HEAD_BYTES = 4_096;
+
+/**
+ * Frontmatter of every memory file, read from the head of each one. The block is
+ * always at the top and capped in practice at a few hundred bytes, so one 4 KB
+ * read per file wins over reading whole files to render a list. Files without a
+ * block (or that vanish mid-walk) simply have no entry.
+ */
+export function loadMeta(
+	memoryDir: string,
+	files: MemoryFileInfo[] | undefined,
+): Map<string, MemoryFileMeta> | undefined {
+	if (files === undefined) return undefined;
+	const meta = new Map<string, MemoryFileMeta>();
+	for (const entry of files) {
+		if (!entry.name.toLowerCase().endsWith(".md") || entry.name === MEMORY_INDEX_NAME) continue;
+		const head = readHead(join(memoryDir, entry.name));
+		if (head === undefined) continue;
+		const doc = splitFrontmatter(head);
+		meta.set(entry.name, {
+			frontmatter: doc.frontmatter,
+			modifiedMs: parseModified(doc.frontmatter?.modified),
+		});
+	}
+	return meta;
+}
+
+/** First `FRONTMATTER_HEAD_BYTES` of a file, or undefined when it cannot be read. */
+function readHead(path: string): string | undefined {
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		const buffer = Buffer.allocUnsafe(FRONTMATTER_HEAD_BYTES);
+		const bytes = readSync(fd, buffer, 0, FRONTMATTER_HEAD_BYTES, 0);
+		return buffer.toString("utf8", 0, bytes);
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				// Best-effort close; a leaked descriptor is not worth failing the list.
+			}
+		}
+	}
 }
 
 export type MemoryBody =
@@ -148,4 +206,17 @@ function writeFileAtomic(path: string, text: string): void {
 
 function describeError(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/** UTF-8 size of a memory file, for the detail header. */
+export function byteLength(text: string): number {
+	return Buffer.byteLength(text, "utf8");
+}
+
+/** `623 B` / `1.2 KB` / `3.4 MB` — for the detail header. */
+export function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const kb = bytes / 1024;
+	if (kb < 1024) return `${kb < 10 ? kb.toFixed(1) : Math.round(kb)} KB`;
+	return `${(kb / 1024).toFixed(1)} MB`;
 }

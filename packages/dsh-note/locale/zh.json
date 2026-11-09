@@ -10,7 +10,7 @@
   "dialog": {
     "title": "记忆",
     "subtitle": "{label} · {count} 条 · 与 Claude Code、pi 共享",
-    "search": "搜索标题、文件或记忆钩子",
+    "search": "搜索标题、文件、钩子或召回描述",
     "disabled": "dsh-note 在当前 profile 中被禁用。",
     "empty": "这个项目还没有记忆。",
     "emptyHint": "让 agent 记住一件事，它就会出现在这里。",
@@ -34,6 +34,10 @@
     "ageMinutes": "{count} 分",
     "ageHours": "{count} 小时",
     "ageDays": "{count} 天",
-    "ageMonths": "{count} 个月"
+    "ageMonths": "{count} 个月",
+    "modified": "修改于 {date}（{age}）",
+    "noType": "无类型",
+    "noFrontmatter": "无 frontmatter",
+    "description": "召回描述"
   }
 }

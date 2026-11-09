@@ -38,6 +38,19 @@ export interface MemoryTopic {
 	size?: number;
 	/** Last modification time; undefined together with `size`. */
 	mtimeMs?: number;
+	/** `metadata.type` from the frontmatter; undefined when absent or unread. */
+	type?: string;
+	/** Frontmatter `description` — the line Claude Code recall matches on. */
+	description?: string;
+	/** `metadata.modified` when it parses, else the file mtime, in epoch ms. */
+	modifiedMs?: number;
+	/**
+	 * Whether the file has a frontmatter block at all. A file without one cannot
+	 * be recalled by Claude Code, so the browser says so instead of leaving the
+	 * type cell blank — and `false` must stay distinguishable from "has a block
+	 * but no `type` field".
+	 */
+	hasFrontmatter?: boolean;
 }
 
 /** `- [Title](file.md) — hook`; bullet or numbered list item. */
@@ -120,7 +133,11 @@ export function removeIndexEntry(indexText: string, file: string): string {
  * names are looked up in the listing — a nested `sub/x.md` target is assumed
  * fine rather than reported missing, and gets no stats either.
  */
-export function buildTopics(indexText: string, files?: MemoryFileInfo[]): MemoryTopic[] {
+export function buildTopics(
+	indexText: string,
+	files?: MemoryFileInfo[],
+	meta?: Map<string, MemoryFileMeta>,
+): MemoryTopic[] {
 	const indexed = parseIndex(indexText);
 	const listed =
 		files === undefined ? undefined : new Map(files.map((entry) => [entry.name, entry]));
@@ -131,6 +148,7 @@ export function buildTopics(indexText: string, files?: MemoryFileInfo[]): Memory
 		if (info !== undefined) {
 			topic.size = info.size;
 			topic.mtimeMs = info.mtimeMs;
+			applyMeta(topic, meta?.get(topic.file), info.mtimeMs);
 		}
 	}
 	const indexedFiles = new Set(indexed.map((topic) => topic.file));
@@ -142,16 +160,43 @@ export function buildTopics(indexText: string, files?: MemoryFileInfo[]): Memory
 				!indexedFiles.has(entry.name),
 		)
 		.sort((a, b) => a.name.localeCompare(b.name))
-		.map<MemoryTopic>((entry) => ({
-			title: entry.name,
-			file: entry.name,
-			hook: "",
-			indexed: false,
-			exists: true,
-			size: entry.size,
-			mtimeMs: entry.mtimeMs,
-		}));
+		.map<MemoryTopic>((entry) => {
+			const topic: MemoryTopic = {
+				title: entry.name,
+				file: entry.name,
+				hook: "",
+				indexed: false,
+				exists: true,
+				size: entry.size,
+				mtimeMs: entry.mtimeMs,
+			};
+			applyMeta(topic, meta?.get(entry.name), entry.mtimeMs);
+			return topic;
+		});
 	return [...indexed, ...orphans];
+}
+
+/** Copy the recall fields of one file's frontmatter onto its topic row. */
+function applyMeta(topic: MemoryTopic, meta: MemoryFileMeta | undefined, mtimeMs: number): void {
+	topic.modifiedMs = meta?.modifiedMs ?? mtimeMs;
+	topic.hasFrontmatter = meta?.frontmatter !== undefined;
+	if (meta?.frontmatter === undefined) return;
+	topic.type = meta.frontmatter.type;
+	topic.description = meta.frontmatter.description;
+}
+
+/**
+ * Text a topic is searched by: title, file name, hook, and — when the dir was
+ * listed with metadata — the frontmatter `type` and `description`. The
+ * description is included because it is the line Claude Code recall matches on,
+ * so searching by the same words finds the same memories in both tools.
+ */
+export function topicMatchText(topic: MemoryTopic): string {
+	const base = topic.indexed
+		? `${topic.title} ${topic.file} ${topic.hook}`
+		: topic.file;
+	const extra = [topic.type, topic.description].filter(Boolean).join(" ");
+	return extra === "" ? base : `${base} ${extra}`;
 }
 
 /** The frontmatter fields Claude Code selects memories by. */
@@ -162,6 +207,23 @@ export interface MemoryFrontmatter {
 	description?: string;
 	/** `user` | `feedback` | `project` | `reference`. */
 	type?: string;
+	/** ISO timestamp of the last maintenance pass. */
+	modified?: string;
+}
+
+/** What the memory dir listing learned from one file's frontmatter head. */
+export interface MemoryFileMeta {
+	/** Parsed fields; undefined when the file has no frontmatter block. */
+	frontmatter?: MemoryFrontmatter;
+	/** `metadata.modified` as epoch ms, when it parses. */
+	modifiedMs?: number;
+}
+
+/** Parse a frontmatter timestamp; anything unparsable stays undefined. */
+export function parseModified(value: string | undefined): number | undefined {
+	if (value === undefined || value.trim() === "") return undefined;
+	const parsed = Date.parse(value.trim());
+	return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 export interface MemoryDocument {
@@ -214,8 +276,10 @@ export function splitFrontmatter(text: string): MemoryDocument {
 			if (key === "name" && value !== "") frontmatter.name = value;
 			else if (key === "description" && value !== "") frontmatter.description = value;
 			else if (key === "type" && value !== "") frontmatter.type = value;
-		} else if (nested === "metadata" && key === "type" && value !== "") {
-			frontmatter.type = value;
+			else if (key === "modified" && value !== "") frontmatter.modified = value;
+		} else if (nested === "metadata") {
+			if (key === "type" && value !== "") frontmatter.type = value;
+			else if (key === "modified" && value !== "") frontmatter.modified = value;
 		}
 	}
 	return Object.keys(frontmatter).length === 0 ? { body } : { frontmatter, body };

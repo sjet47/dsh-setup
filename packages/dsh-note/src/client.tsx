@@ -32,7 +32,7 @@ const EN: Record<string, string> = {
   'action.title': 'Project memory shared with Claude Code and pi',
   'dialog.title': 'Memory',
   'dialog.subtitle': '{label} · {count} topics · shared with Claude Code and pi',
-  'dialog.search': 'Search title, file or hook',
+  'dialog.search': 'Search title, file, hook or description',
   'dialog.disabled': 'dsh-note is disabled in this profile.',
   'dialog.empty': 'No memories for this project yet.',
   'dialog.emptyHint': 'Ask the agent to remember something, and it appears here.',
@@ -57,13 +57,17 @@ const EN: Record<string, string> = {
   'dialog.ageHours': '{count}h',
   'dialog.ageDays': '{count}d',
   'dialog.ageMonths': '{count}mo',
+  'dialog.modified': 'modified {date} ({age})',
+  'dialog.noType': 'no type',
+  'dialog.noFrontmatter': 'no frontmatter',
+  'dialog.description': 'Recall description',
 }
 const ZH: Record<string, string> = {
   'action.label': '记忆',
   'action.title': '与 pi 共享的项目记忆',
   'dialog.title': '记忆',
   'dialog.subtitle': '{label} · {count} 条 · 与 pi 共享',
-  'dialog.search': '搜索标题、文件或记忆钩子',
+  'dialog.search': '搜索标题、文件、钩子或召回描述',
   'dialog.disabled': 'dsh-note 在当前 profile 中被禁用。',
   'dialog.empty': '这个项目还没有记忆。',
   'dialog.emptyHint': '让 agent 记住一件事，它就会出现在这里。',
@@ -88,6 +92,10 @@ const ZH: Record<string, string> = {
   'dialog.ageHours': '{count} 小时',
   'dialog.ageDays': '{count} 天',
   'dialog.ageMonths': '{count} 个月',
+  'dialog.modified': '修改于 {date}（{age}）',
+  'dialog.noType': '无类型',
+  'dialog.noFrontmatter': '无 frontmatter',
+  'dialog.description': '召回描述',
 }
 
 interface Topic {
@@ -98,6 +106,14 @@ interface Topic {
   exists: boolean
   size?: number
   mtimeMs?: number
+  /** `metadata.type` — Claude Code's recall category. */
+  type?: string
+  /** Frontmatter `description` — the line Claude Code recall matches on. */
+  description?: string
+  /** `metadata.modified` when it parses, else the file mtime. */
+  modifiedMs?: number
+  /** False for a file with no frontmatter block, which recall cannot reach. */
+  hasFrontmatter?: boolean
 }
 
 interface ListPayload {
@@ -167,6 +183,10 @@ const SECONDARY = 'var(--dsw-alias-label-secondary, #555)'
  *  host's own interactive fill instead of a silent 5% black fallback. */
 const FILL = 'var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05))'
 const ERROR = 'var(--dsw-alias-state-error-primary, #e03131)'
+/** A memory Claude Code cannot recall (no frontmatter): a defect, not a hint. */
+const WARN = 'var(--dsw-alias-state-warn-primary, #b26a00)'
+/** The `metadata.type` cell; the host's brand ink, kept quieter than the title. */
+const ACCENT = 'var(--dsw-alias-brand-primary, #4d6bfe)'
 const FONT = 'var(--dsh-content-font-size, 14px)'
 /** One step of the content font size, so the panel follows the theme setting. */
 const scale = (factor: number): string => `calc(${FONT} * ${factor})`
@@ -228,6 +248,15 @@ function formatBytes(bytes: number | undefined): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Absolute `YYYY-MM-DD HH:MM` in local time, for the detail metadata row. The
+ *  list shows a relative age (glanceable); the detail view shows the date itself
+ *  (quotable), with the relative age beside it for continuity. */
+function formatTimestamp(ms: number): string {
+  const date = new Date(ms)
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function formatAge(t: Translate, mtimeMs: number | undefined): string {
@@ -435,8 +464,21 @@ function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): R
     const all = list?.topics ?? []
     const needle = query.trim().toLowerCase()
     if (needle === '') return all
-    return all.filter((topic) => `${topic.title} ${topic.file} ${topic.hook}`.toLowerCase().includes(needle))
+    // `description` is the line Claude Code recall matches on, so searching it
+    // here finds the same memories in both tools.
+    return all.filter((topic) =>
+      `${topic.title} ${topic.file} ${topic.hook} ${topic.type ?? ''} ${topic.description ?? ''}`
+        .toLowerCase()
+        .includes(needle),
+    )
   }, [list, query])
+
+  // The type column costs 9ch of every row: show it only when the dir actually
+  // has typed memories (a legacy, frontmatter-free dir would render it empty).
+  const showTypes = (list?.topics ?? []).some((topic) => topic.type !== undefined)
+  // `metadata.modified` falls back to the file mtime (done in the Host), so this
+  // is the same "when did anyone last maintain this" answer for every file.
+  const modifiedMs = selected?.modifiedMs ?? selected?.mtimeMs
 
   const focusRing = '0 0 0 2px var(--dsw-alias-brand-primary, #4d6bfe)'
   const listPaneStyle: CSSProperties = {
@@ -541,6 +583,22 @@ function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): R
                     }}
                   >
                     <div style={{ display: 'flex', gap: 6 }}>
+                      {showTypes ? (
+                        <span
+                          style={{
+                            flex: 'none',
+                            // Fixed cell so titles line up; widest type is `reference`.
+                            width: '9ch',
+                            color: MUTED,
+                            fontSize: scale(0.78),
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {topic.type ?? ''}
+                        </span>
+                      ) : null}
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {topic.title}
                       </span>
@@ -608,6 +666,64 @@ function MemoryBrowser({ sessionId, t }: { sessionId: string; t: Translate }): R
                 >
                   {body?.path ?? selected.file}
                 </div>
+
+                {/* Recall metadata: what Claude Code selects a memory by. The
+                    type cell turns into `no frontmatter` in warning colour when
+                    the block is missing, because such a file is unreachable by
+                    recall — a defect worth seeing, not a blank. */}
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: 6,
+                    padding: '0 12px 4px',
+                    fontSize: scale(0.84),
+                    overflow: 'hidden',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {selected.type === undefined ? (
+                    // A file with no block at all cannot be recalled (warning); a
+                    // block without a `type` field is merely incomplete (dim).
+                    // Say nothing until the file actually loaded: on a failed read
+                    // the row would assert something we do not know.
+                    body === undefined && bodyError === undefined ? (
+                      <span style={{ flex: 'none' }} />
+                    ) : selected.hasFrontmatter === false ? (
+                      <span style={{ color: WARN, flex: 'none' }}>{t('dialog.noFrontmatter')}</span>
+                    ) : (
+                      <span style={{ color: MUTED, flex: 'none' }}>{t('dialog.noType')}</span>
+                    )
+                  ) : (
+                    <span style={{ color: ACCENT, flex: 'none' }}>{selected.type}</span>
+                  )}
+                  {modifiedMs === undefined ? null : (
+                    <>
+                      <span style={{ color: MUTED, flex: 'none' }}>·</span>
+                      <span style={{ color: MUTED, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {t('dialog.modified', { date: formatTimestamp(modifiedMs), age: formatAge(t, modifiedMs) })}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {selected.description === undefined || selected.description === '' ? null : (
+                  <div
+                    style={{
+                      padding: '0 12px 6px',
+                      color: SECONDARY,
+                      fontSize: scale(0.84),
+                      lineHeight: 1.5,
+                      // Two rows, then an ellipsis: the description is context, not
+                      // the reason the panel opened.
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                    title={selected.description}
+                  >
+                    {selected.description}
+                  </div>
+                )}
 
                 {armed ? (
                   <div

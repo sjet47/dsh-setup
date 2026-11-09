@@ -20,6 +20,12 @@ $CLAUDE_CONFIG_DIR or ~/.claude/projects/<claude-slug>/memory/
 
 Files use Claude Code's format, since Claude Code selects memories by it: frontmatter `name` / `description` / `metadata.type` (`user` / `feedback` / `project` / `reference`), optional `metadata.modified`, `[[name]]` links, and `**Why:**` / `**How to apply:**` bodies for `feedback` and `project`. The browser route strips the frontmatter block before shipping the body; the absolute path stays available for the editor.
 
+The panel shows what recall selects on:
+
+1. the list puts the `metadata.type` in a fixed `9ch` cell in front of each title (dropped when no memory in the dir has a type, so a legacy frontmatter-free dir pays nothing), and the search box matches type and `description` too — searching the same words as Claude Code recall finds the same memories;
+2. the detail view adds `type · modified <date> (<age>)` and the wrapped `description` (two rows, then an ellipsis) under the path;
+3. a file with **no frontmatter block** is called out in warning colour, because Claude Code cannot recall it. `metadata.modified` falls back to the file mtime, so every row has a date.
+
 Nothing in dsh's own `$DSH_HOME` stores memories; deleting this plugin leaves them untouched.
 
 ## What the agent sees

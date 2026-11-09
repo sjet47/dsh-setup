@@ -606,3 +606,48 @@ test('a Claude Code memory body is served without its frontmatter', async () => 
   assert.equal(content.text, '\nThe body starts here.\n')
   assert.equal(content.path, join(memoryDir, 'frontmatter.md'))
 })
+
+test('the list route carries the recall metadata Claude Code selects on', async () => {
+  writeFileSync(
+    join(memoryDir, 'typed.md'),
+    [
+      '---',
+      'name: typed',
+      'description: 召回说明',
+      'metadata:',
+      '  type: feedback',
+      '  modified: 2026-11-05T03:07:43.147Z',
+      '---',
+      '',
+      'body',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  writeFileSync(join(memoryDir, 'plain.md'), 'no frontmatter here\n', 'utf8')
+  writeFileSync(
+    join(memoryDir, 'MEMORY.md'),
+    '- [Typed](typed.md) — h\n- [Plain](plain.md) — h\n',
+    'utf8',
+  )
+
+  const harness = makeContext(session)
+  apply(harness.ctx)
+  const topics = (await jsonOf(await list(harness))).topics
+  const typed = topics.find((topic) => topic.file === 'typed.md')
+  const plain = topics.find((topic) => topic.file === 'plain.md')
+
+  assert.equal(typed.type, 'feedback')
+  assert.equal(typed.description, '召回说明')
+  assert.equal(typed.hasFrontmatter, true)
+  // `metadata.modified` wins over the file mtime.
+  assert.equal(typed.modifiedMs, Date.parse('2026-11-05T03:07:43.147Z'))
+
+  // A file with no block is not recallable: the panel needs to say so, and it
+  // must stay distinguishable from "has a block but no type".
+  assert.equal(plain.hasFrontmatter, false)
+  assert.equal(plain.type, undefined)
+  assert.equal(plain.description, undefined)
+  // Fallback to the file mtime, so the detail row always has a date.
+  assert.equal(typeof plain.modifiedMs, 'number')
+})

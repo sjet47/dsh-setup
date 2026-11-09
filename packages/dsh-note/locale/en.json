@@ -10,7 +10,7 @@
   "dialog": {
     "title": "Memory",
     "subtitle": "{label} · {count} topics · shared with Claude Code and pi",
-    "search": "Search title, file or hook",
+    "search": "Search title, file, hook or description",
     "disabled": "dsh-note is disabled in this profile.",
     "empty": "No memories for this project yet.",
     "emptyHint": "Ask the agent to remember something, and it appears here.",
@@ -34,6 +34,10 @@
     "ageMinutes": "{count}m",
     "ageHours": "{count}h",
     "ageDays": "{count}d",
-    "ageMonths": "{count}mo"
+    "ageMonths": "{count}mo",
+    "modified": "modified {date} ({age})",
+    "noType": "no type",
+    "noFrontmatter": "no frontmatter",
+    "description": "Recall description"
   }
 }
