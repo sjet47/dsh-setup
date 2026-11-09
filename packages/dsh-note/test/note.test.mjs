@@ -9,15 +9,17 @@ import { buildMemoryRefresh, diffIndexLines, probeIndex } from '../lib/refresh.j
 import { makeContext, jsonOf } from '../../../test/fake-ctx.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'dsh-note-test-'))
-const agentDir = join(root, 'pi-agent')
+// Claude Code's config dir is where the memory lives now; point it at a
+// throwaway dir so nothing reads the real ~/.claude.
+const claudeDir = join(root, 'claude')
 const project = join(root, 'project')
-mkdirSync(agentDir, { recursive: true })
+mkdirSync(claudeDir, { recursive: true })
 mkdirSync(project, { recursive: true })
-process.env.PI_CODING_AGENT_DIR = agentDir
+process.env.CLAUDE_CONFIG_DIR = claudeDir
 process.env.DSH_HOME = join(root, 'dsh-home')
 
-const slug = `--${project.replace(/^\//, '').replace(/[/\\:]/g, '-')}--`
-const memoryDir = join(agentDir, 'pi-note', slug)
+const claudeSlug = (dir) => dir.replace(/[^a-zA-Z0-9]/g, '-')
+const memoryDir = join(claudeDir, 'projects', claudeSlug(project), 'memory')
 
 const session = { id: 'session-note', header: { cwd: project }, seq: 0 }
 
@@ -141,7 +143,7 @@ test('the working directory service overrides the session header', async () => {
   const harness = makeContext(session, { workingDirectory: { get: () => moved } })
   apply(harness.ctx)
   const payload = await jsonOf(await list(harness))
-  assert.equal(payload.memoryDir, join(agentDir, 'pi-note', `--${moved.replace(/^\//, '').replace(/[/\\:]/g, '-')}--`))
+  assert.equal(payload.memoryDir, join(claudeDir, 'projects', claudeSlug(moved), 'memory'))
 })
 
 test('delete removes the file and its index line together', async () => {
@@ -579,3 +581,28 @@ test('probing returns the cached snapshot without re-reading unchanged files', (
 })
 
 test.after(() => rmSync(root, { recursive: true, force: true }))
+
+test('a Claude Code memory body is served without its frontmatter', async () => {
+  writeFileSync(
+    join(memoryDir, 'frontmatter.md'),
+    [
+      '---',
+      'name: frontmatter',
+      'description: Claude Code recall metadata, not content',
+      'metadata:',
+      '  type: feedback',
+      '---',
+      '',
+      'The body starts here.',
+      '',
+    ].join('\n'),
+    'utf8',
+  )
+  writeFileSync(join(memoryDir, 'MEMORY.md'), '- [FM](frontmatter.md) — metadata\n', 'utf8')
+
+  const harness = makeContext(session)
+  apply(harness.ctx)
+  const content = await jsonOf(await body(harness, 'frontmatter.md'))
+  assert.equal(content.text, '\nThe body starts here.\n')
+  assert.equal(content.path, join(memoryDir, 'frontmatter.md'))
+})

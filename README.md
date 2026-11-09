@@ -8,7 +8,7 @@ Personal [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plu
 |---|---------|--------------|-------------|
 | 1 | [`dsh-mr`](packages/dsh-mr/README.md) | Current branch's GitLab MR / GitHub PR in the session header, plus `/mr` | `pi-mr` |
 | 2 | [`dsh-wakatime`](packages/dsh-wakatime/README.md) | WakaTime heartbeats for sessions, tools and AI line changes | `pi-wakatime` |
-| 3 | [`dsh-note`](packages/dsh-note/README.md) | Project memory **shared with pi-note** + per-session scratchpad + memory browser | `pi-note` |
+| 3 | [`dsh-note`](packages/dsh-note/README.md) | Project memory **shared with Claude Code and pi** + per-session scratchpad + memory browser | `pi-note` |
 | 4 | [`dsh-recap`](packages/dsh-recap/README.md) | One-line session recap on demand, on resume, or after five idle minutes | `pi-recap` |
 | 5 | [`dsh-mermaid`](packages/dsh-mermaid/README.md) | Draw the Mermaid diagrams in a Chat message in a frame-wide viewer | Alma |
 

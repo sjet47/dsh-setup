@@ -1,21 +1,24 @@
 # dsh-note
 
-Project-level file-based memory **shared with pi-note**, plus a per-session scratchpad directory.
+Project-level file-based memory **shared with Claude Code and pi**, plus a per-session scratchpad directory.
 
-## Memory is shared with pi
+## Memory is shared with Claude Code and pi
 
-Both agents use the same files, so a memory written in pi is visible in dsh and vice versa:
+All three agents use the same files, so a memory written in any of them is visible in the others:
 
 ```
-$PI_CODING_AGENT_DIR/pi-note/<project-slug>/
+$CLAUDE_CONFIG_DIR or ~/.claude/projects/<claude-slug>/memory/
 ├── MEMORY.md        # one line per memory: - [Title](file.md) — hook
-└── <topic>.md       # one durable topic per file
+└── <topic>.md       # one durable topic per file, Claude Code's frontmatter format
 ```
 
-1. The agent directory is pi's: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
-2. The slug is pi's session-directory slug: `/home/sjet/repo/x` → `--home-sjet-repo-x--`.
-3. The slug is keyed on the **git main worktree**, so every linked worktree of one repository shares one memory directory.
+1. The directory is Claude Code's auto-memory directory: `<config>/projects/<slug>/memory`, where `<config>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`.
+2. The slug is Claude Code's: every character outside `[A-Za-z0-9]` becomes `-` (case kept), e.g. `/home/sjet/repo/x` → `-home-sjet-repo-x`. Past 200 characters a `-<base36>` suffix is appended, exactly as Claude Code does.
+3. The slug is keyed on the **git main worktree**, so every linked worktree of one repository shares one memory directory — the same key Claude Code uses.
 4. The directory is keyed on the Session's **effective** working directory (`ctx.workingDirectory`), falling back to the header's initial `cwd`, so `cd`-ing a Session moves its memory with it.
+5. Claude Code's `autoMemoryDirectory` user setting (`<config>/settings.json`) is mirrored: once set, it applies to every project in Claude Code too. Cowork/remote memory env vars and `autoMemoryEnabled` are deliberately not mirrored — they would silently split the two tools.
+
+Files use Claude Code's format, since Claude Code selects memories by it: frontmatter `name` / `description` / `metadata.type` (`user` / `feedback` / `project` / `reference`), optional `metadata.modified`, `[[name]]` links, and `**Why:**` / `**How to apply:**` bodies for `feedback` and `project`. The browser route strips the frontmatter block before shipping the body; the absolute path stays available for the editor.
 
 Nothing in dsh's own `$DSH_HOME` stores memories; deleting this plugin leaves them untouched.
 

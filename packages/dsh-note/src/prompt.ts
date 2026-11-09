@@ -29,20 +29,47 @@ export function buildPromptAppend(memoryDir: string, scratchDir: string, snapsho
 }
 
 /**
- * Rules text aimed at the model. The memory directory is shared with pi: both
- * agents read and write `<pi agent dir>/pi-note/<project slug>/`.
+ * Rules text aimed at the model. The memory directory is Claude Code's
+ * auto-memory directory: pi, dsh and Claude Code all read and write it, in
+ * Claude Code's file format. Keep the "# Memory" half byte-identical to
+ * pi-note's rules text (extensions/pi-note/prompt.ts); only the scratchpad
+ * section differs.
  */
 export const RULES_TEXT = `# Memory
 
 You have a persistent file-based memory for this project at \`<MEMORY_DIR>\`. This directory already exists — write to it directly. Do not run mkdir and do not check whether it exists.
 
-Memory is what a future session on this project needs so it does not repeat a mistake, redo work, or work out again what has already been found. Each memory is one markdown file holding one topic that can be updated on its own, named \`<short-kebab-case-slug>.md\`, no frontmatter. Worth saving: pitfalls you hit and how to get past them (a tool's non-obvious behavior, a command that silently returns wrong results, an approach that turned out not to work); findings that took real effort and would otherwise have to be rediscovered (how a system or API actually behaves, where something lives, which approach works); important decisions and constraints, with the why, that the code and git history do not show (convert relative dates to absolute); guidance the user has given on how you should work, with the why; who the user is (role, expertise, preferences); pointers to external resources (URLs, dashboards, tickets).
+Claude Code reads and writes the same directory in the same format, and so do other pi and dsh sessions on this machine: another agent may have created, edited or deleted a memory since you last looked. Re-read a file before rewriting it, and never rewrite \`MEMORY.md\` from memory — read it, change your line, and write the whole file back.
 
-Write a memory as the conclusion — what is true, what to do or avoid, and why — not as a record of what happened. Memory is not a log: no running records, per-run results, progress notes or timelines. When a topic changes, rewrite its conclusion in place instead of appending entries. Work state that a later session has to pick up (progress, next steps) belongs in the project's own files, such as a handoff or plan document, not in memory; this session's artifacts belong in the scratchpad.
+Memory is what a future session on this project needs so it does not repeat a mistake, redo work, or work out again what has already been found. Each memory is one markdown file holding one topic that can be updated on its own, named after its frontmatter \`name\`: a kebab-case slug, so \`ask-behavior-not-tech.md\`.
 
-After writing the file, add a one-line pointer in \`<MEMORY_DIR>/MEMORY.md\`: \`- [Title](file.md) — hook\`, where the hook is a short phrase (under ~150 characters) saying when the memory is relevant. One line per memory, never put memory content there.
+Every memory file starts with frontmatter — recall selects on these fields, so do not skip them:
+
+\`\`\`
+---
+name: ask-behavior-not-tech
+description: Ask frontend decisions as visible behavior, never as implementation choices
+metadata:
+  type: feedback
+---
+\`\`\`
+
+1. \`name\` — the kebab-case slug, identical to the file name without \`.md\`.
+2. \`description\` — one specific line (well under 150 characters) saying what question this file answers. Recall matches on it: a missing or vague description makes the memory unfindable.
+3. \`metadata.type\` — exactly one of:
+   1. \`user\` — who the user is: role, expertise, preferences.
+   2. \`feedback\` — guidance about how to work, both corrections and approaches the user confirmed. Body: the rule or fact first, then \`**Why:**\` (the reason or the incident behind it) and \`**How to apply:**\` (when it kicks in).
+   3. \`project\` — ongoing work, goals, constraints, decisions that neither the code nor git history shows. Same \`**Why:**\` / \`**How to apply:**\` body. Convert relative dates ("last Thursday") to absolute ones.
+   4. \`reference\` — pointers to external resources: URLs, dashboards, tickets.
+4. \`metadata.modified\` — an ISO timestamp, only when you have one; recall falls back to the file's mtime.
+
+Link related memories in the body with \`[[name]]\`; a link to a \`name\` that does not exist yet is fine, it marks something worth writing later. Keep each memory file well under 4 KB including frontmatter — recall reads only the head of a file, so split or summarize a memory that outgrows that rather than letting it grow.
+
+After writing the file, add a one-line pointer in \`<MEMORY_DIR>/MEMORY.md\`: \`- [Title](file.md) — hook\`, where the hook is a short phrase (under ~150 characters) saying when the memory is relevant. One line per memory, never put memory content there, and no frontmatter in the index.
 
 Writing a memory file and updating this index are one atomic step: never create, rename, or delete a memory file without adding, fixing, or removing its \`MEMORY.md\` line in the same turn. A memory file with no index line is invisible to future sessions — the index snapshot is the only recall path.
+
+Write a memory as the conclusion — what is true, what to do or avoid, and why — not as a record of what happened. Memory is not a log: no running records, per-run results, progress notes or timelines. When a topic changes, rewrite its conclusion in place instead of appending entries. Work state that a later session has to pick up (progress, next steps) belongs in the project's own files, such as a handoff or plan document, not in memory; this session's artifacts belong in the scratchpad.
 
 The index is included below as a snapshot taken at session start. When a line looks relevant to the task at hand, read that file before acting on the topic; do not guess at its contents from the hook. Memories you write during this session will not appear in the snapshot; read \`<MEMORY_DIR>/MEMORY.md\` directly when you need the authoritative current list, and after context compaction before acting on past agreements.
 

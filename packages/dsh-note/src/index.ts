@@ -1,12 +1,13 @@
 /**
- * dsh-note — project-level file-based memory shared with pi-note, plus a
- * per-session scratchpad directory.
+ * dsh-note — project-level file-based memory shared with Claude Code and pi,
+ * plus a per-session scratchpad directory.
  *
- * Memory lives in pi's own agent directory (`$PI_CODING_AGENT_DIR` or
- * `~/.pi/agent`) under `pi-note/<project slug>/`, so a project's memories are
- * the same files whichever agent wrote them. The slug is derived from the git
- * main worktree exactly like pi-note, which keeps every worktree of one
- * repository on one directory.
+ * Memory lives in Claude Code's auto-memory directory
+ * (`$CLAUDE_CONFIG_DIR` or `~/.claude`)/projects/<claude-slug>/memory, so a
+ * project's memories are the same files whichever agent wrote them, in Claude
+ * Code's file format. The slug is derived from the git main worktree, the same
+ * key Claude Code uses, which keeps every worktree of one repository on one
+ * directory.
  *
  * The session's directory is read from the `workingDirectory` service when the
  * composition provides it, so memory follows a Session that moved.
@@ -16,7 +17,6 @@
  * @module dsh-note
  */
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
 import { statSync } from 'node:fs'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
@@ -28,10 +28,11 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { MessageId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { buildTopics, type MemoryTopic } from './memory-index.js'
+import { buildTopics, splitFrontmatter, type MemoryTopic } from './memory-index.js'
 import { deleteTopic, loadTopics, readTopicBody, resolveInside } from './memory-store.js'
 import { memoryRootFor } from './git-root.js'
-import { MEMORY_DIR_NAME, MEMORY_INDEX_NAME, memoryDirFor, memoryRootLabel, scratchpadDirFor, scratchpadRoot } from './paths.js'
+import { MEMORY_INDEX_NAME, memoryDirFor, memoryRootLabel, scratchpadDirFor, scratchpadRoot } from './paths.js'
+import { resolveClaudeMemoryConfig } from './claude-memory.js'
 import { prepareSession } from './prepare.js'
 import { buildPromptAppend } from './prompt.js'
 import { buildMemoryRefresh, baselineFromSnapshot, DEFAULT_REFRESH_MAX_CHARS, probeIndex, sameIndex, type IndexSnapshot } from './refresh.js'
@@ -62,12 +63,6 @@ export const Config: z<Config> = z.object({
   memoryRefresh: z.boolean().default(true),
   memoryRefreshMaxChars: z.number().min(1).default(DEFAULT_REFRESH_MAX_CHARS),
 })
-
-/** Pi's own agent directory, so both agents read the same memories. */
-function piAgentDir(): string {
-  const configured = process.env['PI_CODING_AGENT_DIR']
-  return configured !== undefined && configured !== '' ? configured : join(homedir(), '.pi', 'agent')
-}
 
 interface NoteRecord {
   memoryDir: string
@@ -172,7 +167,9 @@ export function apply(ctx: Context, config: Config = Config()): void {
     const cwd = sessionCwd(ctx, session)
     if (cwd === undefined) return undefined
     const root = memoryRootFor(cwd)
-    const memoryDir = memoryDirFor(piAgentDir(), root)
+    // Claude Code's auto-memory dir, resolved every session start: the env var
+    // and Claude Code's settings may change between sessions.
+    const memoryDir = memoryDirFor(resolveClaudeMemoryConfig(process.env), root)
     return {
       memoryDir,
       memoryIndex: join(memoryDir, MEMORY_INDEX_NAME),
@@ -426,7 +423,9 @@ export function apply(ctx: Context, config: Config = Config()): void {
         if (Buffer.byteLength(body.text, 'utf8') > config.maxBodyBytes) {
           return json({ error: `file is larger than ${config.maxBodyBytes} bytes` }, 413)
         }
-        return json({ file, text: body.text, path: join(record.memoryDir, file) })
+        // Strip Claude Code's frontmatter before shipping the body: it is recall
+        // metadata, not content. The path stays available for the editor.
+        return json({ file, text: splitFrontmatter(body.text).body, path: join(record.memoryDir, file) })
       },
     }),
   )

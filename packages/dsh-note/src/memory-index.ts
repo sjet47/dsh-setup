@@ -153,3 +153,70 @@ export function buildTopics(indexText: string, files?: MemoryFileInfo[]): Memory
 		}));
 	return [...indexed, ...orphans];
 }
+
+/** The frontmatter fields Claude Code selects memories by. */
+export interface MemoryFrontmatter {
+	/** Kebab-case slug; the file name without `.md`. */
+	name?: string;
+	/** One-line summary that recall matches on. */
+	description?: string;
+	/** `user` | `feedback` | `project` | `reference`. */
+	type?: string;
+}
+
+export interface MemoryDocument {
+	/** Parsed fields, undefined when the file has no frontmatter block. */
+	frontmatter?: MemoryFrontmatter;
+	/** Everything after the frontmatter block, verbatim. */
+	body: string;
+}
+
+/** Opening `---` on the first line; a leading blank line disqualifies the file. */
+const FRONTMATTER_OPEN = /^---[ \t]*\r?\n/;
+/** Closing `---` line, alone on a line. */
+const FRONTMATTER_CLOSE = /\r?\n---[ \t]*(?:\r?\n|$)/;
+/** One `key: value` line of the block. */
+const FRONTMATTER_FIELD = /^([A-Za-z_][\w-]*)[ \t]*:[ \t]*(.*)$/;
+
+/** Strip one layer of matching quotes: `"a: b"` -> `a: b`. */
+function unquote(value: string): string {
+	const trimmed = value.trim();
+	const quoted = /^(["'])([\s\S]*)\1$/.exec(trimmed);
+	return quoted ? quoted[2] : trimmed;
+}
+
+/**
+ * Split a memory file into its frontmatter fields and the body Claude Code (and
+ * therefore pi-note) reads. Lenient on purpose: files written before the
+ * frontmatter convention, or by an agent that only wrote some fields, still
+ * have to open and render. `type` is accepted both nested
+ * (`metadata:\n  type: feedback`, what Claude Code writes) and top level.
+ */
+export function splitFrontmatter(text: string): MemoryDocument {
+	const open = FRONTMATTER_OPEN.exec(text);
+	if (!open) return { body: text };
+	const rest = text.slice(open[0].length);
+	const close = FRONTMATTER_CLOSE.exec(rest);
+	if (!close) return { body: text };
+	const block = rest.slice(0, close.index);
+	const body = rest.slice(close.index + close[0].length);
+	const frontmatter: MemoryFrontmatter = {};
+	let nested: "metadata" | undefined;
+	for (const line of block.split(/\r?\n/)) {
+		if (line.trim() === "") continue;
+		const indented = /^[ \t]/.test(line);
+		const field = FRONTMATTER_FIELD.exec(line.trim());
+		if (field === null) continue;
+		const key = field[1].toLowerCase();
+		const value = unquote(field[2]);
+		if (!indented) {
+			nested = key === "metadata" && value === "" ? "metadata" : undefined;
+			if (key === "name" && value !== "") frontmatter.name = value;
+			else if (key === "description" && value !== "") frontmatter.description = value;
+			else if (key === "type" && value !== "") frontmatter.type = value;
+		} else if (nested === "metadata" && key === "type" && value !== "") {
+			frontmatter.type = value;
+		}
+	}
+	return Object.keys(frontmatter).length === 0 ? { body } : { frontmatter, body };
+}
