@@ -64,9 +64,9 @@ const EN: Record<string, string> = {
 }
 const ZH: Record<string, string> = {
   'action.label': '记忆',
-  'action.title': '与 pi 共享的项目记忆',
+  'action.title': '与 Claude Code、pi 共享的项目记忆',
   'dialog.title': '记忆',
-  'dialog.subtitle': '{label} · {count} 条 · 与 pi 共享',
+  'dialog.subtitle': '{label} · {count} 条 · 与 Claude Code、pi 共享',
   'dialog.search': '搜索标题、文件、钩子或召回描述',
   'dialog.disabled': 'dsh-note 在当前 profile 中被禁用。',
   'dialog.empty': '这个项目还没有记忆。',
